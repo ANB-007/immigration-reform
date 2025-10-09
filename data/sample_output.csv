@@ -1,0 +1,64 @@
+# Run a sample simulation to create sample_output.csv
+import sys
+sys.path.append('.')
+
+# Import simulation modules
+from src.simulation.models import SimulationConfig
+from src.simulation.sim import Simulation
+from src.simulation.utils import save_simulation_results
+
+# Create a sample simulation
+print("Running sample simulation to generate sample_output.csv...")
+
+config = SimulationConfig(
+    initial_workers=10000,
+    years=10, 
+    seed=42,
+    output_path="data/sample_output.csv"
+)
+
+simulation = Simulation(config)
+states = simulation.run()
+
+# Save the results
+save_simulation_results(states, config.output_path)
+
+# Display the first few rows
+print("\nSample output (first 5 rows):")
+print("year,total_workers,permanent_workers,temporary_workers,new_permanent,new_temporary")
+for i, state in enumerate(states[:5]):
+    print(f"{state.year},{state.total_workers},{state.permanent_workers},{state.temporary_workers},{state.new_permanent},{state.new_temporary}")
+
+print(f"\nFull sample output saved to: {config.output_path}")
+
+# Show final directory structure
+import os
+
+def print_tree(directory, prefix="", max_depth=3, current_depth=0):
+    """Print directory tree structure."""
+    if current_depth >= max_depth:
+        return
+    
+    try:
+        items = sorted(os.listdir(directory))
+        dirs = [item for item in items if os.path.isdir(os.path.join(directory, item))]
+        files = [item for item in items if os.path.isfile(os.path.join(directory, item))]
+        
+        for i, dir_name in enumerate(dirs):
+            is_last_dir = i == len(dirs) - 1 and len(files) == 0
+            print(f"{prefix}{'└─' if is_last_dir else '├─'} {dir_name}/")
+            extension = "   " if is_last_dir else "│  "
+            print_tree(os.path.join(directory, dir_name), prefix + extension, max_depth, current_depth + 1)
+        
+        for i, file_name in enumerate(files):
+            is_last = i == len(files) - 1
+            print(f"{prefix}{'└─' if is_last else '├─'} {file_name}")
+    except PermissionError:
+        print(f"{prefix}[Permission Denied]")
+
+print("\n" + "="*60)
+print("FINAL PROJECT STRUCTURE")
+print("="*60)
+print("project-root/")
+print_tree(".", current_depth=0)
+print("="*60)
