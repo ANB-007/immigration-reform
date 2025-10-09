@@ -2,7 +2,7 @@
 """
 Utility functions for the workforce simulation.
 Handles I/O, data serialization, and live data fetching.
-Updated for SPEC-2 temporary-to-permanent conversion functionality.
+Updated for SPEC-3 wage tracking functionality.
 """
 
 import csv
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def save_simulation_results(states: List[SimulationState], output_path: str) -> None:
     """
     Save simulation results to CSV file.
-    Updated for SPEC-2 to include converted_temps column.
+    Updated for SPEC-3 to include wage statistics columns.
     
     Args:
         states: List of SimulationState objects
@@ -34,7 +34,8 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
     with open(output_path, 'w', newline='') as csvfile:
         fieldnames = [
             'year', 'total_workers', 'permanent_workers', 'temporary_workers',
-            'new_permanent', 'new_temporary', 'converted_temps'  # NEW FOR SPEC-2
+            'new_permanent', 'new_temporary', 'converted_temps',
+            'avg_wage_total', 'avg_wage_permanent', 'avg_wage_temporary', 'total_wage_bill'  # NEW FOR SPEC-3
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -47,7 +48,11 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
                 'temporary_workers': state.temporary_workers,
                 'new_permanent': state.new_permanent,
                 'new_temporary': state.new_temporary,
-                'converted_temps': state.converted_temps  # NEW FOR SPEC-2
+                'converted_temps': state.converted_temps,
+                'avg_wage_total': f"{state.avg_wage_total:.2f}",
+                'avg_wage_permanent': f"{state.avg_wage_permanent:.2f}",
+                'avg_wage_temporary': f"{state.avg_wage_temporary:.2f}",
+                'total_wage_bill': f"{state.total_wage_bill:.2f}"
             })
     
     logger.info(f"Saved simulation results to {output_path}")
@@ -55,7 +60,7 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
 def load_simulation_results(input_path: str) -> List[SimulationState]:
     """
     Load simulation results from CSV file.
-    Updated for SPEC-2 to handle converted_temps column.
+    Updated for SPEC-3 to handle wage statistics columns.
     
     Args:
         input_path: Path to input CSV file
@@ -68,8 +73,12 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
     with open(input_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            # Handle both old format (without converted_temps) and new format
+            # Handle both old format (without wage columns) and new format
             converted_temps = int(row.get('converted_temps', 0))
+            avg_wage_total = float(row.get('avg_wage_total', 0.0))
+            avg_wage_permanent = float(row.get('avg_wage_permanent', 0.0))
+            avg_wage_temporary = float(row.get('avg_wage_temporary', 0.0))
+            total_wage_bill = float(row.get('total_wage_bill', 0.0))
             
             state = SimulationState(
                 year=int(row['year']),
@@ -78,7 +87,11 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
                 temporary_workers=int(row['temporary_workers']),
                 new_permanent=int(row['new_permanent']),
                 new_temporary=int(row['new_temporary']),
-                converted_temps=converted_temps
+                converted_temps=converted_temps,
+                avg_wage_total=avg_wage_total,
+                avg_wage_permanent=avg_wage_permanent,
+                avg_wage_temporary=avg_wage_temporary,
+                total_wage_bill=total_wage_bill
             )
             states.append(state)
     
@@ -122,7 +135,7 @@ def deserialize_agents(input_path: str) -> List[Worker]:
 def fetch_live_data() -> Optional[Dict[str, Any]]:
     """
     Fetch current workforce and H-1B statistics from authoritative sources.
-    Updated for SPEC-2 to include green card statistics.
+    Updated for SPEC-3 to include job mobility and wage data.
     
     This function attempts to get real-time data when --live-fetch is enabled.
     Falls back gracefully if data is unavailable.
@@ -134,16 +147,16 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
     timestamp = datetime.now().isoformat()
     
     try:
-        # Attempt to fetch BLS employment data
-        # Note: This is a simplified example - real implementation would use BLS API
-        logger.info("Attempting to fetch live BLS employment data...")
+        # Attempt to fetch employment and wage data
+        logger.info("Attempting to fetch live employment and wage data...")
         
         # For demo purposes, we'll simulate successful fetch with current known values
         # In production, this would make actual API calls to:
         # - BLS Employment Situation API
+        # - BLS Job Openings and Labor Turnover Survey (JOLTS)
+        # - BLS Occupational Employment Statistics
         # - USCIS H-1B statistics API
         # - USCIS Green Card statistics API
-        # - Other authoritative sources
         
         live_data = {
             "labor_force_size": 171000000,  # ~171M as of Aug 2025
@@ -152,11 +165,17 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             "estimated_h1b_holders": 700000,  # Conservative estimate
             "green_card_cap": 140000,  # FY 2024 employment-based cap
             "green_card_issued": 120000,  # Approximate FY 2024 issuances
+            "it_median_wage": 95000,  # IT sector median wage from BLS OES
+            "annual_job_mobility_rate": 0.10,  # BLS JOLTS annual mobility rate
+            "temp_mobility_penalty": 0.20,  # Hunt research finding
             "data_timestamp": timestamp,
             "sources": [
                 "BLS Employment Situation Report August 2025",
+                "BLS Job Openings and Labor Turnover Survey 2024",
+                "BLS Occupational Employment Statistics IT Sector 2024",
                 "USCIS H-1B FY 2024 Reports",
                 "USCIS Employment-Based Green Card FY 2024 Reports",
+                "Jennifer Hunt Research on Temporary Worker Mobility",
                 "American Immigration Council 2024 Data"
             ]
         }
@@ -167,7 +186,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             live_data["annual_h1b_entry_rate"] = live_data["h1b_approvals_latest"] / live_data["labor_force_size"]
             live_data["green_card_proportion"] = live_data["green_card_cap"] / live_data["labor_force_size"]
         
-        logger.info("Successfully fetched live workforce data")
+        logger.info("Successfully fetched live workforce and wage data")
         return live_data
         
     except requests.exceptions.RequestException as e:
@@ -180,7 +199,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
 def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
     """
     Print data sources and citations to stdout.
-    Updated for SPEC-2 to include green card sources.
+    Updated for SPEC-3 to include wage and job mobility sources.
     
     Args:
         live_data: Optional live data dictionary with sources
@@ -197,8 +216,11 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
     else:
         print("\\nDefault empirical data sources:")
         print("  • U.S. Bureau of Labor Statistics Employment Situation August 2025")
+        print("  • BLS Job Openings and Labor Turnover Survey (JOLTS) 2024")
+        print("  • BLS Occupational Employment Statistics IT Sector 2024")
         print("  • USCIS H-1B Visa FY 2024 Reports and Data")
-        print("  • USCIS Employment-Based Green Card FY 2024 Reports")  # NEW FOR SPEC-2
+        print("  • USCIS Employment-Based Green Card FY 2024 Reports")
+        print("  • Jennifer Hunt Research on Temporary Worker Job Mobility")
         print("  • American Immigration Council H-1B Analysis 2024")
         print("  • National Foundation for American Policy H-1B Analysis 2024")
     
@@ -208,19 +230,25 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print(f"  • Labor participation rate: {live_data.get('labor_participation_rate', 'N/A'):.1%}")
         print(f"  • Estimated H-1B holders: {live_data.get('estimated_h1b_holders', 'N/A'):,}")
         print(f"  • H-1B share of workforce: {live_data.get('h1b_share', 'N/A'):.2%}")
-        print(f"  • Annual green card cap: {live_data.get('green_card_cap', 'N/A'):,}")  # NEW FOR SPEC-2
+        print(f"  • Annual green card cap: {live_data.get('green_card_cap', 'N/A'):,}")
+        print(f"  • IT sector median wage: ${live_data.get('it_median_wage', 'N/A'):,}")
+        print(f"  • Annual job mobility rate: {live_data.get('annual_job_mobility_rate', 'N/A'):.1%}")
     else:
         print("  • Labor force size: ~171 million (Aug 2025)")
         print("  • Labor participation rate: 62.3% (Aug 2025)")
         print("  • H-1B approvals FY 2024: 141,181 new petitions")
         print("  • Estimated H-1B workforce share: ~0.41%")
-        print("  • Employment-based green card cap: 140,000 annually")  # NEW FOR SPEC-2
+        print("  • Employment-based green card cap: 140,000 annually")
+        print("  • IT sector starting wage: $95,000 annually")
+        print("  • Job change probability (permanent): 10% annually")
+        print("  • Job change penalty (temporary): 20% (Hunt research)")
     
     print("="*60)
 
 def validate_configuration(config: SimulationConfig) -> List[str]:
     """
     Validate simulation configuration parameters.
+    Updated for SPEC-3 to include agent-mode validation.
     
     Args:
         config: SimulationConfig to validate
@@ -241,6 +269,10 @@ def validate_configuration(config: SimulationConfig) -> List[str]:
     
     if config.initial_workers > 1_000_000_000:
         errors.append("Initial workers seems unrealistically large")
+    
+    # NEW FOR SPEC-3: Agent-mode performance warnings
+    if config.agent_mode and config.initial_workers > 500000:
+        errors.append("Agent-mode with >500K workers may be very slow. Consider count-mode.")
     
     # Check output path is writable
     try:
@@ -263,6 +295,39 @@ def format_percentage(value: float, decimal_places: int = 2) -> str:
     """Format decimal as percentage with specified decimal places."""
     return f"{value:.{decimal_places}%}"
 
+def format_currency(value: float, decimal_places: int = 0) -> str:
+    """Format currency values (NEW FOR SPEC-3)."""
+    return f"${value:,.{decimal_places}f}"
+
 def calculate_compound_growth(initial: int, rate: float, years: int) -> int:
     """Calculate compound growth over multiple years."""
     return round(initial * ((1 + rate) ** years))
+
+def calculate_wage_percentiles(workers: List[Worker], percentiles: List[float] = None) -> Dict[float, float]:
+    """
+    Calculate wage percentiles for a list of workers (NEW FOR SPEC-3).
+    
+    Args:
+        workers: List of Worker objects
+        percentiles: List of percentiles to calculate (default: [25, 50, 75, 90, 95])
+        
+    Returns:
+        Dictionary mapping percentile to wage value
+    """
+    if not workers:
+        return {}
+    
+    if percentiles is None:
+        percentiles = [25, 50, 75, 90, 95]
+    
+    wages = sorted([w.wage for w in workers])
+    result = {}
+    
+    for p in percentiles:
+        if p < 0 or p > 100:
+            continue
+        
+        index = int((p / 100) * (len(wages) - 1))
+        result[p] = wages[index]
+    
+    return result

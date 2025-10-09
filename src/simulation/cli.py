@@ -2,7 +2,7 @@
 """
 Command-line interface for the workforce growth simulation.
 Provides a user-friendly way to run simulations with various parameters.
-Updated for SPEC-2 temporary-to-permanent conversion functionality.
+Updated for SPEC-3 wage tracking and job-to-job transition functionality.
 """
 
 import sys
@@ -15,24 +15,27 @@ from .models import SimulationConfig
 from .sim import Simulation
 from .utils import (
     save_simulation_results, fetch_live_data, print_data_sources,
-    validate_configuration, format_number, format_percentage
+    validate_configuration, format_number, format_percentage, format_currency
 )
 from .empirical_params import (
     DEFAULT_YEARS, DEFAULT_SEED, H1B_SHARE, 
     ANNUAL_PERMANENT_ENTRY_RATE, ANNUAL_H1B_ENTRY_RATE,
-    PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE
+    PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE,
+    STARTING_WAGE, JOB_CHANGE_PROB_PERM, TEMP_JOB_CHANGE_PENALTY,
+    WAGE_JUMP_FACTOR_MEAN, INDUSTRY_NAME
 )
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with green card conversions",
+        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking and green card conversions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python -m src.simulation.cli --initial-workers 10000
   python -m src.simulation.cli --initial-workers 50000 --years 20 --seed 123
   python -m src.simulation.cli --initial-workers 10000 --live-fetch --output results.csv
+  python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
         """
     )
     
@@ -68,6 +71,20 @@ Examples:
         help="Output CSV file path (default: data/sample_output.csv)"
     )
     
+    # NEW FOR SPEC-3: Agent-mode vs count-mode selection
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--agent-mode",
+        action="store_true",
+        default=True,
+        help="Use agent-based simulation with individual wage tracking (default)"
+    )
+    mode_group.add_argument(
+        "--count-mode", 
+        action="store_true",
+        help="Use count-based simulation for large populations (faster, approximate wages)"
+    )
+    
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -100,22 +117,37 @@ def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
 def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None) -> None:
     """
     Print simulation header with parameters.
-    Updated for SPEC-2 to show green card conversion information.
+    Updated for SPEC-3 to show wage and job mobility information.
     """
     print("\\n" + "="*60)
     print("WORKFORCE GROWTH SIMULATION")
     print("="*60)
+    print(f"Industry: {INDUSTRY_NAME}")
     print(f"Initial workforce: {format_number(config.initial_workers)}")
     print(f"Simulation years: {config.years}")
+    print(f"Simulation mode: {'Agent-based' if config.agent_mode else 'Count-based'}")
     print(f"Random seed: {config.seed or 'None (random)'}")
     print(f"Output file: {config.output_path}")
     
-    # NEW FOR SPEC-2: Show green card conversion cap
+    # Performance warning for large agent-mode simulations
+    if config.agent_mode and config.initial_workers > 200000:
+        print(f"\\n⚠️  WARNING: Agent-mode with {format_number(config.initial_workers)} workers will be slow.")
+        print("   Consider using --count-mode for large simulations.")
+    
+    # Green card conversion cap (FROM SPEC-2)
     cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
     annual_cap = round(config.initial_workers * cap_proportion)
     print(f"\\nGreen card conversion cap:")
     print(f"  Annual conversions: {annual_cap} ({format_percentage(cap_proportion, 4)})")
     print(f"  Based on US cap: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)}")
+    
+    # NEW FOR SPEC-3: Wage and job mobility parameters
+    temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
+    print(f"\\nWage and job mobility parameters:")
+    print(f"  Starting wage: {format_currency(STARTING_WAGE)}")
+    print(f"  Job change probability (permanent): {format_percentage(JOB_CHANGE_PROB_PERM)}")
+    print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")
+    print(f"  Average wage jump on job change: {format_percentage(WAGE_JUMP_FACTOR_MEAN - 1)}")
     
     if live_data:
         print("\\nUsing live-fetched data:")
@@ -123,6 +155,10 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
         print(f"  Annual H-1B entry rate: {format_percentage(live_data.get('annual_h1b_entry_rate', ANNUAL_H1B_ENTRY_RATE))}")
         if 'green_card_cap' in live_data:
             print(f"  Green card cap: {format_number(live_data['green_card_cap'])}")
+        if 'it_median_wage' in live_data:
+            print(f"  IT sector median wage: {format_currency(live_data['it_median_wage'])}")
+        if 'annual_job_mobility_rate' in live_data:
+            print(f"  Job mobility rate: {format_percentage(live_data['annual_job_mobility_rate'])}")
     else:
         print("\\nUsing default empirical parameters:")
         print(f"  H-1B share: {format_percentage(H1B_SHARE)}")
@@ -134,7 +170,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
 def print_simulation_results(simulation: Simulation) -> None:
     """
     Print summary of simulation results.
-    Updated for SPEC-2 to show conversion statistics.
+    Updated for SPEC-3 to show wage growth and job mobility statistics.
     """
     stats = simulation.get_summary_stats()
     
@@ -142,6 +178,8 @@ def print_simulation_results(simulation: Simulation) -> None:
     print("SIMULATION RESULTS")
     print("="*60)
     print(f"Years simulated: {stats['years_simulated']}")
+    print(f"Simulation mode: {stats['simulation_mode']}")
+    print(f"Industry: {stats['industry']}")
     print(f"Initial workforce: {format_number(stats['initial_workforce'])}")
     print(f"Final workforce: {format_number(stats['final_workforce'])}")
     print(f"Total growth: {format_number(stats['total_growth'])} workers")
@@ -155,12 +193,23 @@ def print_simulation_results(simulation: Simulation) -> None:
     print("\\nWorker flows:")
     print(f"  Total permanent entries: {format_number(stats['total_new_permanent'])}")
     print(f"  Total temporary entries: {format_number(stats['total_new_temporary'])}")
-    print(f"  Total conversions (temp→perm): {format_number(stats['total_conversions'])}")  # NEW FOR SPEC-2
+    print(f"  Total conversions (temp→perm): {format_number(stats['total_conversions'])}")
     
-    # NEW FOR SPEC-2: Conversion utilization statistics
     print("\\nConversion statistics:")
     print(f"  Annual conversion cap: {format_number(stats['annual_conversion_cap'])}")
     print(f"  Cap utilization: {format_percentage(stats['conversion_utilization'])}")
+    
+    # NEW FOR SPEC-3: Wage statistics
+    print("\\nWage statistics:")
+    print(f"  Initial average wage: {format_currency(stats['initial_avg_wage'])}")
+    print(f"  Final average wage: {format_currency(stats['final_avg_wage'])}")
+    print(f"  Total wage growth: {format_currency(stats['total_wage_growth'])}")
+    print(f"  Average annual wage growth rate: {format_percentage(stats['average_annual_wage_growth_rate'])}")
+    print(f"  Final total wage bill: {format_currency(stats['final_wage_bill'])}")
+    
+    print("\\nJob mobility rates used:")
+    print(f"  Permanent workers: {format_percentage(stats['job_change_prob_permanent'])}")
+    print(f"  Temporary workers: {format_percentage(stats['job_change_prob_temporary'])}")
     
     print("="*60)
 
@@ -188,7 +237,8 @@ def main() -> int:
             years=args.years,
             seed=args.seed,
             live_fetch=args.live_fetch,
-            output_path=args.output
+            output_path=args.output,
+            agent_mode=not args.count_mode  # Default to agent-mode unless count-mode specified
         )
         
         # Validate configuration
@@ -203,11 +253,14 @@ def main() -> int:
         live_data = None
         if config.live_fetch:
             if not args.quiet:
-                print("Fetching live workforce data...")
+                print("Fetching live workforce and wage data...")
             live_data = fetch_live_data()
             if live_data:
                 if not args.quiet:
                     print("Successfully fetched live data")
+                    # Print updated workforce size if different
+                    if live_data.get('labor_force_size') != REAL_US_WORKFORCE_SIZE:
+                        print(f"Updated workforce size: {format_number(live_data['labor_force_size'])}")
             else:
                 print("Warning: Failed to fetch live data, using defaults")
         
@@ -231,13 +284,20 @@ def main() -> int:
         if not simulation.validate_proportional_growth():
             logger.warning("Proportional growth validation failed - check parameters")
         
-        # NEW FOR SPEC-2: Validate conversion consistency
         if not simulation.validate_conversion_consistency():
             logger.warning("Conversion consistency validation failed - check implementation")
+        
+        # NEW FOR SPEC-3: Validate wage consistency
+        if not simulation.validate_wage_consistency():
+            logger.warning("Wage consistency validation failed - check wage calculations")
         
         if not args.quiet:
             print(f"\\nSimulation completed successfully!")
             print(f"Results saved to: {config.output_path}")
+            print(f"\\nNext steps:")
+            print(f"  • Analyze wage growth patterns in the output CSV")
+            print(f"  • Compare permanent vs temporary worker wage trajectories") 
+            print(f"  • Examine the impact of green card conversions on wages")
         
         return 0
         
