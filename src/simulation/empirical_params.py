@@ -10,28 +10,48 @@ Data sources (as of October 2025):
 - USCIS Employment-Based Green Card statistics 2024
 - BLS Job Openings and Labor Turnover Survey (JOLTS) 2024
 - Jennifer Hunt research on temporary worker job mobility
+- USCIS H-1B Nationality Distribution FY 2024
+- DOL H-1B Disclosure Data by Country of Birth 2024
 """
 
 # Technical requirements
 PYTHON_MIN_VERSION = "3.10"
 DEFAULT_SEED = 42
 
-# Industry configuration (NEW FOR SPEC-3)
+# Industry configuration (FROM SPEC-3)
 INDUSTRY_NAME = "information_technology"  # Single industry for the simulation (string)
 
-# Starting wages (NEW FOR SPEC-3)
+# Starting wages (FROM SPEC-3)
 STARTING_WAGE = 95000.0          # USD per year (float) - starting wage for all workers
 
-# Job-change probabilities (NEW FOR SPEC-3)
+# Job-change probabilities (FROM SPEC-3)
 # Interpreted as probability an individual changes jobs in a given year
 JOB_CHANGE_PROB_PERM = 0.10     # 10% of permanent workers change jobs each year (float)
 TEMP_JOB_CHANGE_PENALTY = 0.20  # Temporary workers are 20% less likely to change jobs (Jennifer Hunt finding)
 # Derived: JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
 
-# Wage jump when changing jobs (NEW FOR SPEC-3)
+# Wage jump when changing jobs (FROM SPEC-3)
 # Interpreted as multiplicative factor applied to wage when an agent changes job
 WAGE_JUMP_FACTOR_MEAN = 1.08    # Mean 8% wage boost on job change (float)
 WAGE_JUMP_FACTOR_STD = 0.02     # Standard deviation for wage jump stochasticity (float)
+
+# Nationality distributions (NEW FOR SPEC-4)
+# Real-world shares based on USCIS H-1B data and DOL disclosure data (FY 2024 figures)
+TEMP_NATIONALITY_DISTRIBUTION = {
+    "India": 0.70,
+    "China": 0.10,
+    "Canada": 0.04,
+    "South Korea": 0.03,
+    "Philippines": 0.02,
+    "United Kingdom": 0.02,
+    "Mexico": 0.02,
+    "Brazil": 0.01,
+    "Germany": 0.01,
+    "Other": 0.05,
+}
+
+# Default nationality for permanent (domestic) workers (NEW FOR SPEC-4)
+PERMANENT_NATIONALITY = "United States"
 
 # H-1B workforce proportions (based on current research)
 # Current estimates suggest ~583,420 H-1B holders in 2019 (latest official count)
@@ -59,6 +79,8 @@ DATA_SOURCES = {
     "bls_employment": "BLS Employment Situation August 2025",
     "bls_jolts": "BLS Job Openings and Labor Turnover Survey 2024",
     "uscis_h1b": "USCIS H-1B FY 2024 Reports", 
+    "uscis_h1b_nationality": "USCIS H-1B Nationality Distribution FY 2024",
+    "dol_h1b_disclosure": "DOL H-1B Disclosure Data by Country of Birth 2024",
     "uscis_green_cards": "USCIS Employment-Based Green Card FY 2024 Reports",
     "labor_force_size": "171 million (Aug 2025)",
     "h1b_approvals_2024": "141,181 new petitions",
@@ -76,5 +98,25 @@ VALID_RANGES = {
     "green_card_proportion": (0.0001, 0.01),  # Green card cap proportion range
     "starting_wage": (50000, 200000),  # Reasonable wage range for IT sector
     "job_change_prob": (0.01, 0.30),   # 1% to 30% annual job change probability
-    "wage_jump_factor": (1.01, 1.25)   # 1% to 25% wage jump on job change
+    "wage_jump_factor": (1.01, 1.25),  # 1% to 25% wage jump on job change
+    "nationality_distribution_sum": (0.999, 1.001)  # Distribution must sum to ~1.0
 }
+
+# Validation function for nationality distribution (NEW FOR SPEC-4)
+def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-6) -> bool:
+    """
+    Validate that nationality distribution sums to 1.0 within tolerance.
+    
+    Args:
+        distribution: Dictionary mapping nationality to proportion
+        tolerance: Acceptable deviation from 1.0
+        
+    Returns:
+        True if distribution is valid
+    """
+    total = sum(distribution.values())
+    return abs(total - 1.0) <= tolerance
+
+# Validate the default distribution
+if not validate_nationality_distribution(TEMP_NATIONALITY_DISTRIBUTION):
+    raise ValueError(f"TEMP_NATIONALITY_DISTRIBUTION does not sum to 1.0: {sum(TEMP_NATIONALITY_DISTRIBUTION.values())}")

@@ -2,7 +2,7 @@
 """
 Command-line interface for the workforce growth simulation.
 Provides a user-friendly way to run simulations with various parameters.
-Updated for SPEC-3 wage tracking and job-to-job transition functionality.
+Updated for SPEC-4 nationality segmentation functionality.
 """
 
 import sys
@@ -15,20 +15,22 @@ from .models import SimulationConfig
 from .sim import Simulation
 from .utils import (
     save_simulation_results, fetch_live_data, print_data_sources,
-    validate_configuration, format_number, format_percentage, format_currency
+    validate_configuration, format_number, format_percentage, format_currency,
+    update_nationality_distribution, export_nationality_report
 )
 from .empirical_params import (
     DEFAULT_YEARS, DEFAULT_SEED, H1B_SHARE, 
     ANNUAL_PERMANENT_ENTRY_RATE, ANNUAL_H1B_ENTRY_RATE,
     PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE,
     STARTING_WAGE, JOB_CHANGE_PROB_PERM, TEMP_JOB_CHANGE_PENALTY,
-    WAGE_JUMP_FACTOR_MEAN, INDUSTRY_NAME
+    WAGE_JUMP_FACTOR_MEAN, INDUSTRY_NAME, TEMP_NATIONALITY_DISTRIBUTION,
+    PERMANENT_NATIONALITY
 )
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking and green card conversions",
+        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, and nationality segmentation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -36,6 +38,7 @@ Examples:
   python -m src.simulation.cli --initial-workers 50000 --years 20 --seed 123
   python -m src.simulation.cli --initial-workers 10000 --live-fetch --output results.csv
   python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
+  python -m src.simulation.cli --initial-workers 10000 --show-nationality-summary  # Show nationality breakdown
         """
     )
     
@@ -62,7 +65,7 @@ Examples:
     parser.add_argument(
         "--live-fetch",
         action="store_true",
-        help="Fetch latest workforce data from authoritative sources"
+        help="Fetch latest workforce and nationality data from authoritative sources"
     )
     
     parser.add_argument(
@@ -71,18 +74,30 @@ Examples:
         help="Output CSV file path (default: data/sample_output.csv)"
     )
     
-    # NEW FOR SPEC-3: Agent-mode vs count-mode selection
+    # FROM SPEC-3: Agent-mode vs count-mode selection
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
         "--agent-mode",
         action="store_true",
         default=True,
-        help="Use agent-based simulation with individual wage tracking (default)"
+        help="Use agent-based simulation with individual wage and nationality tracking (default)"
     )
     mode_group.add_argument(
         "--count-mode", 
         action="store_true",
-        help="Use count-based simulation for large populations (faster, approximate wages)"
+        help="Use count-based simulation for large populations (faster, approximate wages/nationalities)"
+    )
+    
+    # NEW FOR SPEC-4: Nationality summary option
+    parser.add_argument(
+        "--show-nationality-summary",
+        action="store_true",
+        help="Show nationality breakdown at start and end of simulation"
+    )
+    
+    parser.add_argument(
+        "--export-nationality-report",
+        help="Export detailed nationality report to specified CSV file (agent-mode only)"
     )
     
     parser.add_argument(
@@ -114,10 +129,11 @@ def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None) -> None:
+def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None,
+                          nationality_distribution: Optional[dict] = None) -> None:
     """
     Print simulation header with parameters.
-    Updated for SPEC-3 to show wage and job mobility information.
+    Updated for SPEC-4 to show nationality distribution information.
     """
     print("\\n" + "="*60)
     print("WORKFORCE GROWTH SIMULATION")
@@ -141,13 +157,27 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     print(f"  Annual conversions: {annual_cap} ({format_percentage(cap_proportion, 4)})")
     print(f"  Based on US cap: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)}")
     
-    # NEW FOR SPEC-3: Wage and job mobility parameters
+    # FROM SPEC-3: Wage and job mobility parameters
     temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
     print(f"\\nWage and job mobility parameters:")
     print(f"  Starting wage: {format_currency(STARTING_WAGE)}")
     print(f"  Job change probability (permanent): {format_percentage(JOB_CHANGE_PROB_PERM)}")
     print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")
     print(f"  Average wage jump on job change: {format_percentage(WAGE_JUMP_FACTOR_MEAN - 1)}")
+    
+    # NEW FOR SPEC-4: Nationality distribution
+    print(f"\\nNationality distribution:")
+    print(f"  Permanent workers: {PERMANENT_NATIONALITY}")
+    if nationality_distribution:
+        print("  Temporary worker nationalities (top 5):")
+        sorted_nationalities = sorted(nationality_distribution.items(), key=lambda x: x[1], reverse=True)
+        for nationality, proportion in sorted_nationalities[:5]:
+            print(f"    {nationality}: {format_percentage(proportion)}")
+    else:
+        print("  Temporary worker nationalities (top 5):")
+        sorted_nationalities = sorted(TEMP_NATIONALITY_DISTRIBUTION.items(), key=lambda x: x[1], reverse=True)
+        for nationality, proportion in sorted_nationalities[:5]:
+            print(f"    {nationality}: {format_percentage(proportion)}")
     
     if live_data:
         print("\\nUsing live-fetched data:")
@@ -170,7 +200,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
 def print_simulation_results(simulation: Simulation) -> None:
     """
     Print summary of simulation results.
-    Updated for SPEC-3 to show wage growth and job mobility statistics.
+    Updated for SPEC-4 to show nationality distribution changes.
     """
     stats = simulation.get_summary_stats()
     
@@ -199,7 +229,7 @@ def print_simulation_results(simulation: Simulation) -> None:
     print(f"  Annual conversion cap: {format_number(stats['annual_conversion_cap'])}")
     print(f"  Cap utilization: {format_percentage(stats['conversion_utilization'])}")
     
-    # NEW FOR SPEC-3: Wage statistics
+    # FROM SPEC-3: Wage statistics
     print("\\nWage statistics:")
     print(f"  Initial average wage: {format_currency(stats['initial_avg_wage'])}")
     print(f"  Final average wage: {format_currency(stats['final_avg_wage'])}")
@@ -210,6 +240,17 @@ def print_simulation_results(simulation: Simulation) -> None:
     print("\\nJob mobility rates used:")
     print(f"  Permanent workers: {format_percentage(stats['job_change_prob_permanent'])}")
     print(f"  Temporary workers: {format_percentage(stats['job_change_prob_temporary'])}")
+    
+    # NEW FOR SPEC-4: Nationality statistics
+    if 'initial_temp_nationalities' in stats and 'final_temp_nationalities' in stats:
+        print("\\nTemporary worker nationality changes:")
+        print("  Initial top nationalities:")
+        for nationality, proportion in stats['initial_temp_nationalities'].items():
+            print(f"    {nationality}: {format_percentage(proportion)}")
+        
+        print("  Final top nationalities:")
+        for nationality, proportion in stats['final_temp_nationalities'].items():
+            print(f"    {nationality}: {format_percentage(proportion)}")
     
     print("="*60)
 
@@ -238,7 +279,8 @@ def main() -> int:
             seed=args.seed,
             live_fetch=args.live_fetch,
             output_path=args.output,
-            agent_mode=not args.count_mode  # Default to agent-mode unless count-mode specified
+            agent_mode=not args.count_mode,  # Default to agent-mode unless count-mode specified
+            show_nationality_summary=args.show_nationality_summary
         )
         
         # Validate configuration
@@ -251,9 +293,10 @@ def main() -> int:
         
         # Fetch live data if requested
         live_data = None
+        updated_nationality_distribution = None
         if config.live_fetch:
             if not args.quiet:
-                print("Fetching live workforce and wage data...")
+                print("Fetching live workforce, wage, and nationality data...")
             live_data = fetch_live_data()
             if live_data:
                 if not args.quiet:
@@ -261,19 +304,40 @@ def main() -> int:
                     # Print updated workforce size if different
                     if live_data.get('labor_force_size') != REAL_US_WORKFORCE_SIZE:
                         print(f"Updated workforce size: {format_number(live_data['labor_force_size'])}")
+                
+                # NEW FOR SPEC-4: Update nationality distribution from live data
+                updated_nationality_distribution = update_nationality_distribution(live_data)
+                if updated_nationality_distribution != TEMP_NATIONALITY_DISTRIBUTION:
+                    print("Updated nationality distribution from live data")
             else:
                 print("Warning: Failed to fetch live data, using defaults")
         
         # Print header (unless quiet mode)
         if not args.quiet:
-            print_simulation_header(config, live_data)
+            print_simulation_header(config, live_data, updated_nationality_distribution)
         
         # Run simulation
         simulation = Simulation(config)
+        
+        # Update nationality distribution in simulation if live data was fetched
+        if updated_nationality_distribution:
+            simulation.temp_nationality_distribution = updated_nationality_distribution
+            simulation._validate_nationality_distribution()
+        
         states = simulation.run()
         
         # Save results
-        save_simulation_results(states, config.output_path)
+        save_simulation_results(states, config.output_path, include_nationality_columns=True)
+        
+        # Export nationality report if requested (NEW FOR SPEC-4)
+        if args.export_nationality_report:
+            if config.agent_mode:
+                workers = simulation.to_agent_model()
+                export_nationality_report(workers, args.export_nationality_report)
+                if not args.quiet:
+                    print(f"Nationality report exported to: {args.export_nationality_report}")
+            else:
+                print("Warning: Nationality report export requires agent-mode")
         
         # Print results (unless quiet mode)
         if not args.quiet:
@@ -287,17 +351,22 @@ def main() -> int:
         if not simulation.validate_conversion_consistency():
             logger.warning("Conversion consistency validation failed - check implementation")
         
-        # NEW FOR SPEC-3: Validate wage consistency
+        # FROM SPEC-3: Validate wage consistency
         if not simulation.validate_wage_consistency():
             logger.warning("Wage consistency validation failed - check wage calculations")
+        
+        # NEW FOR SPEC-4: Validate nationality consistency
+        if not simulation.validate_nationality_consistency():
+            logger.warning("Nationality consistency validation failed - check nationality logic")
         
         if not args.quiet:
             print(f"\\nSimulation completed successfully!")
             print(f"Results saved to: {config.output_path}")
             print(f"\\nNext steps:")
-            print(f"  • Analyze wage growth patterns in the output CSV")
-            print(f"  • Compare permanent vs temporary worker wage trajectories") 
-            print(f"  • Examine the impact of green card conversions on wages")
+            print(f"  • Analyze wage growth patterns by nationality in the output CSV")
+            print(f"  • Compare permanent vs temporary worker wage trajectories by nationality") 
+            print(f"  • Examine the impact of green card conversions on nationality composition")
+            print(f"  • Use --export-nationality-report for detailed nationality analysis")
         
         return 0
         

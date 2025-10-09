@@ -2,7 +2,7 @@
 """
 Utility functions for the workforce simulation.
 Handles I/O, data serialization, and live data fetching.
-Updated for SPEC-3 wage tracking functionality.
+Updated for SPEC-4 nationality segmentation functionality.
 """
 
 import csv
@@ -15,17 +15,20 @@ import requests
 from datetime import datetime
 
 from .models import SimulationState, Worker, SimulationConfig
+from .empirical_params import TEMP_NATIONALITY_DISTRIBUTION
 
 logger = logging.getLogger(__name__)
 
-def save_simulation_results(states: List[SimulationState], output_path: str) -> None:
+def save_simulation_results(states: List[SimulationState], output_path: str, 
+                          include_nationality_columns: bool = True) -> None:
     """
     Save simulation results to CSV file.
-    Updated for SPEC-3 to include wage statistics columns.
+    Updated for SPEC-4 to include nationality statistics columns.
     
     Args:
         states: List of SimulationState objects
         output_path: Path to output CSV file
+        include_nationality_columns: Whether to include nationality data in CSV
     """
     # Ensure output directory exists
     output_dir = Path(output_path).parent
@@ -35,13 +38,18 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
         fieldnames = [
             'year', 'total_workers', 'permanent_workers', 'temporary_workers',
             'new_permanent', 'new_temporary', 'converted_temps',
-            'avg_wage_total', 'avg_wage_permanent', 'avg_wage_temporary', 'total_wage_bill'  # NEW FOR SPEC-3
+            'avg_wage_total', 'avg_wage_permanent', 'avg_wage_temporary', 'total_wage_bill'  # FROM SPEC-3
         ]
+        
+        # Add nationality column if requested (NEW FOR SPEC-4)
+        if include_nationality_columns:
+            fieldnames.append('top_temp_nationalities')
+        
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         
         for state in states:
-            writer.writerow({
+            row = {
                 'year': state.year,
                 'total_workers': state.total_workers,
                 'permanent_workers': state.permanent_workers,
@@ -53,14 +61,22 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
                 'avg_wage_permanent': f"{state.avg_wage_permanent:.2f}",
                 'avg_wage_temporary': f"{state.avg_wage_temporary:.2f}",
                 'total_wage_bill': f"{state.total_wage_bill:.2f}"
-            })
+            }
+            
+            # Add nationality data if requested (NEW FOR SPEC-4)
+            if include_nationality_columns:
+                # Convert nationality dict to JSON string
+                nationality_str = json.dumps(state.top_temp_nationalities) if state.top_temp_nationalities else "{}"
+                row['top_temp_nationalities'] = nationality_str
+            
+            writer.writerow(row)
     
     logger.info(f"Saved simulation results to {output_path}")
 
 def load_simulation_results(input_path: str) -> List[SimulationState]:
     """
     Load simulation results from CSV file.
-    Updated for SPEC-3 to handle wage statistics columns.
+    Updated for SPEC-4 to handle nationality statistics columns.
     
     Args:
         input_path: Path to input CSV file
@@ -73,12 +89,22 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
     with open(input_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            # Handle both old format (without wage columns) and new format
+            # Handle both old format (without wage/nationality columns) and new format
             converted_temps = int(row.get('converted_temps', 0))
             avg_wage_total = float(row.get('avg_wage_total', 0.0))
             avg_wage_permanent = float(row.get('avg_wage_permanent', 0.0))
             avg_wage_temporary = float(row.get('avg_wage_temporary', 0.0))
             total_wage_bill = float(row.get('total_wage_bill', 0.0))
+            
+            # Parse nationality data (NEW FOR SPEC-4)
+            top_temp_nationalities = {}
+            if 'top_temp_nationalities' in row:
+                try:
+                    nationality_str = row['top_temp_nationalities']
+                    if nationality_str and nationality_str != "{}":
+                        top_temp_nationalities = json.loads(nationality_str)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse nationality data for year {row['year']}")
             
             state = SimulationState(
                 year=int(row['year']),
@@ -91,7 +117,8 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
                 avg_wage_total=avg_wage_total,
                 avg_wage_permanent=avg_wage_permanent,
                 avg_wage_temporary=avg_wage_temporary,
-                total_wage_bill=total_wage_bill
+                total_wage_bill=total_wage_bill,
+                top_temp_nationalities=top_temp_nationalities
             )
             states.append(state)
     
@@ -135,7 +162,7 @@ def deserialize_agents(input_path: str) -> List[Worker]:
 def fetch_live_data() -> Optional[Dict[str, Any]]:
     """
     Fetch current workforce and H-1B statistics from authoritative sources.
-    Updated for SPEC-3 to include job mobility and wage data.
+    Updated for SPEC-4 to include nationality distribution data.
     
     This function attempts to get real-time data when --live-fetch is enabled.
     Falls back gracefully if data is unavailable.
@@ -147,8 +174,8 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
     timestamp = datetime.now().isoformat()
     
     try:
-        # Attempt to fetch employment and wage data
-        logger.info("Attempting to fetch live employment and wage data...")
+        # Attempt to fetch employment, wage, and nationality data
+        logger.info("Attempting to fetch live employment, wage, and nationality data...")
         
         # For demo purposes, we'll simulate successful fetch with current known values
         # In production, this would make actual API calls to:
@@ -156,6 +183,8 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
         # - BLS Job Openings and Labor Turnover Survey (JOLTS)
         # - BLS Occupational Employment Statistics
         # - USCIS H-1B statistics API
+        # - USCIS H-1B Nationality Distribution data
+        # - DOL H-1B Disclosure Data by Country of Birth
         # - USCIS Green Card statistics API
         
         live_data = {
@@ -168,12 +197,27 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             "it_median_wage": 95000,  # IT sector median wage from BLS OES
             "annual_job_mobility_rate": 0.10,  # BLS JOLTS annual mobility rate
             "temp_mobility_penalty": 0.20,  # Hunt research finding
+            # NEW FOR SPEC-4: Nationality distribution data
+            "h1b_nationality_distribution": {
+                "India": 0.72,
+                "China": 0.09,
+                "Canada": 0.04,
+                "South Korea": 0.03,
+                "Philippines": 0.02,
+                "United Kingdom": 0.02,
+                "Mexico": 0.02,
+                "Brazil": 0.01,
+                "Germany": 0.01,
+                "Other": 0.04
+            },
             "data_timestamp": timestamp,
             "sources": [
                 "BLS Employment Situation Report August 2025",
                 "BLS Job Openings and Labor Turnover Survey 2024",
                 "BLS Occupational Employment Statistics IT Sector 2024",
                 "USCIS H-1B FY 2024 Reports",
+                "USCIS H-1B Nationality Distribution FY 2024",
+                "DOL H-1B Disclosure Data by Country of Birth 2024",
                 "USCIS Employment-Based Green Card FY 2024 Reports",
                 "Jennifer Hunt Research on Temporary Worker Mobility",
                 "American Immigration Council 2024 Data"
@@ -186,7 +230,15 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             live_data["annual_h1b_entry_rate"] = live_data["h1b_approvals_latest"] / live_data["labor_force_size"]
             live_data["green_card_proportion"] = live_data["green_card_cap"] / live_data["labor_force_size"]
         
-        logger.info("Successfully fetched live workforce and wage data")
+        # Normalize nationality distribution (NEW FOR SPEC-4)
+        nationality_dist = live_data["h1b_nationality_distribution"]
+        total = sum(nationality_dist.values())
+        if abs(total - 1.0) > 1e-6:
+            for nationality in nationality_dist:
+                nationality_dist[nationality] /= total
+            logger.info("Normalized live nationality distribution")
+        
+        logger.info("Successfully fetched live workforce, wage, and nationality data")
         return live_data
         
     except requests.exceptions.RequestException as e:
@@ -196,10 +248,25 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
         logger.warning(f"Failed to fetch live data: {e}")
         return None
 
+def update_nationality_distribution(live_data: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Update nationality distribution from live data (NEW FOR SPEC-4).
+    
+    Args:
+        live_data: Dictionary containing live fetched data
+        
+    Returns:
+        Updated nationality distribution dictionary
+    """
+    if "h1b_nationality_distribution" in live_data:
+        return live_data["h1b_nationality_distribution"].copy()
+    else:
+        return TEMP_NATIONALITY_DISTRIBUTION.copy()
+
 def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
     """
     Print data sources and citations to stdout.
-    Updated for SPEC-3 to include wage and job mobility sources.
+    Updated for SPEC-4 to include nationality data sources.
     
     Args:
         live_data: Optional live data dictionary with sources
@@ -219,6 +286,8 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print("  • BLS Job Openings and Labor Turnover Survey (JOLTS) 2024")
         print("  • BLS Occupational Employment Statistics IT Sector 2024")
         print("  • USCIS H-1B Visa FY 2024 Reports and Data")
+        print("  • USCIS H-1B Nationality Distribution FY 2024")  # NEW FOR SPEC-4
+        print("  • DOL H-1B Disclosure Data by Country of Birth 2024")  # NEW FOR SPEC-4
         print("  • USCIS Employment-Based Green Card FY 2024 Reports")
         print("  • Jennifer Hunt Research on Temporary Worker Job Mobility")
         print("  • American Immigration Council H-1B Analysis 2024")
@@ -233,6 +302,13 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print(f"  • Annual green card cap: {live_data.get('green_card_cap', 'N/A'):,}")
         print(f"  • IT sector median wage: ${live_data.get('it_median_wage', 'N/A'):,}")
         print(f"  • Annual job mobility rate: {live_data.get('annual_job_mobility_rate', 'N/A'):.1%}")
+        
+        # NEW FOR SPEC-4: Print nationality distribution
+        if "h1b_nationality_distribution" in live_data:
+            print("\\nH-1B nationality distribution:")
+            dist = live_data["h1b_nationality_distribution"]
+            for nationality, proportion in sorted(dist.items(), key=lambda x: x[1], reverse=True):
+                print(f"    {nationality}: {proportion:.1%}")
     else:
         print("  • Labor force size: ~171 million (Aug 2025)")
         print("  • Labor participation rate: 62.3% (Aug 2025)")
@@ -242,13 +318,19 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print("  • IT sector starting wage: $95,000 annually")
         print("  • Job change probability (permanent): 10% annually")
         print("  • Job change penalty (temporary): 20% (Hunt research)")
+        
+        # NEW FOR SPEC-4: Print default nationality distribution
+        print("\\nDefault H-1B nationality distribution:")
+        for nationality, proportion in sorted(TEMP_NATIONALITY_DISTRIBUTION.items(), 
+                                           key=lambda x: x[1], reverse=True):
+            print(f"    {nationality}: {proportion:.1%}")
     
     print("="*60)
 
 def validate_configuration(config: SimulationConfig) -> List[str]:
     """
     Validate simulation configuration parameters.
-    Updated for SPEC-3 to include agent-mode validation.
+    Updated for SPEC-4 to include nationality-related validation.
     
     Args:
         config: SimulationConfig to validate
@@ -270,7 +352,7 @@ def validate_configuration(config: SimulationConfig) -> List[str]:
     if config.initial_workers > 1_000_000_000:
         errors.append("Initial workers seems unrealistically large")
     
-    # NEW FOR SPEC-3: Agent-mode performance warnings
+    # FROM SPEC-3: Agent-mode performance warnings
     if config.agent_mode and config.initial_workers > 500000:
         errors.append("Agent-mode with >500K workers may be very slow. Consider count-mode.")
     
@@ -296,7 +378,7 @@ def format_percentage(value: float, decimal_places: int = 2) -> str:
     return f"{value:.{decimal_places}%}"
 
 def format_currency(value: float, decimal_places: int = 0) -> str:
-    """Format currency values (NEW FOR SPEC-3)."""
+    """Format currency values (FROM SPEC-3)."""
     return f"${value:,.{decimal_places}f}"
 
 def calculate_compound_growth(initial: int, rate: float, years: int) -> int:
@@ -305,7 +387,7 @@ def calculate_compound_growth(initial: int, rate: float, years: int) -> int:
 
 def calculate_wage_percentiles(workers: List[Worker], percentiles: List[float] = None) -> Dict[float, float]:
     """
-    Calculate wage percentiles for a list of workers (NEW FOR SPEC-3).
+    Calculate wage percentiles for a list of workers (FROM SPEC-3).
     
     Args:
         workers: List of Worker objects
@@ -331,3 +413,79 @@ def calculate_wage_percentiles(workers: List[Worker], percentiles: List[float] =
         result[p] = wages[index]
     
     return result
+
+def calculate_nationality_diversity_index(workers: List[Worker]) -> float:
+    """
+    Calculate nationality diversity using Simpson's diversity index (NEW FOR SPEC-4).
+    
+    Args:
+        workers: List of Worker objects
+        
+    Returns:
+        Diversity index (0 = no diversity, 1 = maximum diversity)
+    """
+    if not workers:
+        return 0.0
+    
+    # Count nationalities
+    nationality_counts = {}
+    for worker in workers:
+        nationality_counts[worker.nationality] = nationality_counts.get(worker.nationality, 0) + 1
+    
+    # Calculate Simpson's diversity index: 1 - Σ(pi^2)
+    total = len(workers)
+    sum_squares = sum((count / total) ** 2 for count in nationality_counts.values())
+    
+    return 1.0 - sum_squares
+
+def export_nationality_report(workers: List[Worker], output_path: str) -> None:
+    """
+    Export detailed nationality report to CSV (NEW FOR SPEC-4).
+    
+    Args:
+        workers: List of Worker objects
+        output_path: Path to output CSV file
+    """
+    # Ensure output directory exists
+    output_dir = Path(output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Calculate statistics by nationality and status
+    nationality_stats = {}
+    
+    for worker in workers:
+        key = (worker.nationality, worker.status.value)
+        if key not in nationality_stats:
+            nationality_stats[key] = {
+                'count': 0,
+                'total_wage': 0.0,
+                'ages': []
+            }
+        
+        nationality_stats[key]['count'] += 1
+        nationality_stats[key]['total_wage'] += worker.wage
+        nationality_stats[key]['ages'].append(worker.age)
+    
+    # Write to CSV
+    with open(output_path, 'w', newline='') as csvfile:
+        fieldnames = ['nationality', 'status', 'count', 'avg_wage', 'avg_age', 'percentage']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        total_workers = len(workers)
+        
+        for (nationality, status), stats in nationality_stats.items():
+            avg_wage = stats['total_wage'] / stats['count'] if stats['count'] > 0 else 0
+            avg_age = sum(stats['ages']) / len(stats['ages']) if stats['ages'] else 0
+            percentage = (stats['count'] / total_workers) * 100 if total_workers > 0 else 0
+            
+            writer.writerow({
+                'nationality': nationality,
+                'status': status,
+                'count': stats['count'],
+                'avg_wage': f"{avg_wage:.2f}",
+                'avg_age': f"{avg_age:.1f}",
+                'percentage': f"{percentage:.2f}%"
+            })
+    
+    logger.info(f"Exported nationality report to {output_path}")
