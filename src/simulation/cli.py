@@ -2,7 +2,7 @@
 """
 Command-line interface for the workforce growth simulation.
 Provides a user-friendly way to run simulations with various parameters.
-Updated for SPEC-4 nationality segmentation functionality.
+Updated for SPEC-5 per-country cap functionality.
 """
 
 import sys
@@ -24,13 +24,13 @@ from .empirical_params import (
     PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE,
     STARTING_WAGE, JOB_CHANGE_PROB_PERM, TEMP_JOB_CHANGE_PENALTY,
     WAGE_JUMP_FACTOR_MEAN, INDUSTRY_NAME, TEMP_NATIONALITY_DISTRIBUTION,
-    PERMANENT_NATIONALITY
+    PERMANENT_NATIONALITY, PER_COUNTRY_CAP_SHARE, ENABLE_COUNTRY_CAP
 )
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, and nationality segmentation",
+        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, nationality segmentation, and per-country caps",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -39,6 +39,8 @@ Examples:
   python -m src.simulation.cli --initial-workers 10000 --live-fetch --output results.csv
   python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
   python -m src.simulation.cli --initial-workers 10000 --show-nationality-summary  # Show nationality breakdown
+  python -m src.simulation.cli --initial-workers 10000 --country-cap  # Enable 7% per-country cap
+  python -m src.simulation.cli --initial-workers 10000 --no-country-cap  # Disable cap (default)
         """
     )
     
@@ -88,7 +90,7 @@ Examples:
         help="Use count-based simulation for large populations (faster, approximate wages/nationalities)"
     )
     
-    # NEW FOR SPEC-4: Nationality summary option
+    # FROM SPEC-4: Nationality summary option
     parser.add_argument(
         "--show-nationality-summary",
         action="store_true",
@@ -98,6 +100,20 @@ Examples:
     parser.add_argument(
         "--export-nationality-report",
         help="Export detailed nationality report to specified CSV file (agent-mode only)"
+    )
+    
+    # NEW FOR SPEC-5: Per-country cap options
+    cap_group = parser.add_mutually_exclusive_group()
+    cap_group.add_argument(
+        "--country-cap",
+        action="store_true",
+        help="Enable 7% per-country limit on employment-based green cards"
+    )
+    cap_group.add_argument(
+        "--no-country-cap",
+        action="store_true", 
+        default=True,
+        help="Disable per-country cap (default - use global FIFO queue)"
     )
     
     parser.add_argument(
@@ -133,7 +149,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
                           nationality_distribution: Optional[dict] = None) -> None:
     """
     Print simulation header with parameters.
-    Updated for SPEC-4 to show nationality distribution information.
+    Updated for SPEC-5 to show per-country cap information.
     """
     print("\\n" + "="*60)
     print("WORKFORCE GROWTH SIMULATION")
@@ -153,9 +169,19 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     # Green card conversion cap (FROM SPEC-2)
     cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
     annual_cap = round(config.initial_workers * cap_proportion)
-    print(f"\\nGreen card conversion cap:")
+    print(f"\\nGreen card conversion system:")
     print(f"  Annual conversions: {annual_cap} ({format_percentage(cap_proportion, 4)})")
     print(f"  Based on US cap: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)}")
+    
+    # NEW FOR SPEC-5: Per-country cap information
+    if config.country_cap_enabled:
+        per_country_cap = round(annual_cap * PER_COUNTRY_CAP_SHARE)
+        print(f"  Per-country cap: ENABLED ({format_percentage(PER_COUNTRY_CAP_SHARE)})")
+        print(f"  Max per country: {per_country_cap} conversions/year")
+        print(f"  Queue mode: Separate nationality queues with FIFO within each")
+    else:
+        print(f"  Per-country cap: DISABLED")
+        print(f"  Queue mode: Single global FIFO queue")
     
     # FROM SPEC-3: Wage and job mobility parameters
     temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
@@ -165,7 +191,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")
     print(f"  Average wage jump on job change: {format_percentage(WAGE_JUMP_FACTOR_MEAN - 1)}")
     
-    # NEW FOR SPEC-4: Nationality distribution
+    # FROM SPEC-4: Nationality distribution
     print(f"\\nNationality distribution:")
     print(f"  Permanent workers: {PERMANENT_NATIONALITY}")
     if nationality_distribution:
@@ -200,7 +226,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
 def print_simulation_results(simulation: Simulation) -> None:
     """
     Print summary of simulation results.
-    Updated for SPEC-4 to show nationality distribution changes.
+    Updated for SPEC-5 to show per-country cap results.
     """
     stats = simulation.get_summary_stats()
     
@@ -229,6 +255,35 @@ def print_simulation_results(simulation: Simulation) -> None:
     print(f"  Annual conversion cap: {format_number(stats['annual_conversion_cap'])}")
     print(f"  Cap utilization: {format_percentage(stats['conversion_utilization'])}")
     
+    # NEW FOR SPEC-5: Per-country cap results
+    if stats.get('country_cap_enabled'):
+        print(f"\\nPer-country cap results:")
+        print(f"  Per-country cap: {format_number(stats['per_country_cap'])} ({format_percentage(stats['per_country_cap_rate'])})")
+        
+        if 'total_conversions_by_country' in stats:
+            print("  Total conversions by country:")
+            conversions_by_country = stats['total_conversions_by_country']
+            sorted_conversions = sorted(conversions_by_country.items(), key=lambda x: x[1], reverse=True)
+            for nationality, conversions in sorted_conversions[:5]:  # Top 5
+                print(f"    {nationality}: {format_number(conversions)}")
+        
+        if 'final_queue_backlogs' in stats:
+            print("  Final queue backlogs:")
+            backlogs = stats['final_queue_backlogs']
+            total_backlog = sum(backlogs.values())
+            print(f"    Total backlog: {format_number(total_backlog)} workers")
+            
+            if backlogs:
+                sorted_backlogs = sorted(backlogs.items(), key=lambda x: x[1], reverse=True)
+                for nationality, backlog in sorted_backlogs[:5]:  # Top 5
+                    if backlog > 0:
+                        print(f"    {nationality}: {format_number(backlog)} workers")
+        
+        countries_with_backlogs = stats.get('countries_with_backlogs', 0)
+        print(f"  Countries with backlogs: {countries_with_backlogs}")
+    else:
+        print("\\nPer-country cap: DISABLED (global FIFO queue used)")
+    
     # FROM SPEC-3: Wage statistics
     print("\\nWage statistics:")
     print(f"  Initial average wage: {format_currency(stats['initial_avg_wage'])}")
@@ -241,7 +296,7 @@ def print_simulation_results(simulation: Simulation) -> None:
     print(f"  Permanent workers: {format_percentage(stats['job_change_prob_permanent'])}")
     print(f"  Temporary workers: {format_percentage(stats['job_change_prob_temporary'])}")
     
-    # NEW FOR SPEC-4: Nationality statistics
+    # FROM SPEC-4: Nationality statistics
     if 'initial_temp_nationalities' in stats and 'final_temp_nationalities' in stats:
         print("\\nTemporary worker nationality changes:")
         print("  Initial top nationalities:")
@@ -272,6 +327,15 @@ def main() -> int:
             print(f"Error: Python {required_version}+ required, found {python_version}")
             return 1
         
+        # Determine country cap setting (NEW FOR SPEC-5)
+        # CLI flag overrides default parameter
+        if args.country_cap:
+            country_cap_enabled = True
+        elif args.no_country_cap:
+            country_cap_enabled = False
+        else:
+            country_cap_enabled = ENABLE_COUNTRY_CAP
+        
         # Create configuration
         config = SimulationConfig(
             initial_workers=args.initial_workers,
@@ -280,7 +344,8 @@ def main() -> int:
             live_fetch=args.live_fetch,
             output_path=args.output,
             agent_mode=not args.count_mode,  # Default to agent-mode unless count-mode specified
-            show_nationality_summary=args.show_nationality_summary
+            show_nationality_summary=args.show_nationality_summary,
+            country_cap_enabled=country_cap_enabled  # NEW FOR SPEC-5
         )
         
         # Validate configuration
@@ -305,7 +370,7 @@ def main() -> int:
                     if live_data.get('labor_force_size') != REAL_US_WORKFORCE_SIZE:
                         print(f"Updated workforce size: {format_number(live_data['labor_force_size'])}")
                 
-                # NEW FOR SPEC-4: Update nationality distribution from live data
+                # FROM SPEC-4: Update nationality distribution from live data
                 updated_nationality_distribution = update_nationality_distribution(live_data)
                 if updated_nationality_distribution != TEMP_NATIONALITY_DISTRIBUTION:
                     print("Updated nationality distribution from live data")
@@ -326,10 +391,10 @@ def main() -> int:
         
         states = simulation.run()
         
-        # Save results
+        # Save results (NEW FOR SPEC-5: always include nationality columns, now includes per-country data)
         save_simulation_results(states, config.output_path, include_nationality_columns=True)
         
-        # Export nationality report if requested (NEW FOR SPEC-4)
+        # Export nationality report if requested (FROM SPEC-4)
         if args.export_nationality_report:
             if config.agent_mode:
                 workers = simulation.to_agent_model()
@@ -355,9 +420,13 @@ def main() -> int:
         if not simulation.validate_wage_consistency():
             logger.warning("Wage consistency validation failed - check wage calculations")
         
-        # NEW FOR SPEC-4: Validate nationality consistency
+        # FROM SPEC-4: Validate nationality consistency
         if not simulation.validate_nationality_consistency():
             logger.warning("Nationality consistency validation failed - check nationality logic")
+        
+        # NEW FOR SPEC-5: Validate country cap consistency
+        if not simulation.validate_country_cap_consistency():
+            logger.warning("Country cap consistency validation failed - check per-country cap logic")
         
         if not args.quiet:
             print(f"\\nSimulation completed successfully!")
@@ -366,6 +435,11 @@ def main() -> int:
             print(f"  • Analyze wage growth patterns by nationality in the output CSV")
             print(f"  • Compare permanent vs temporary worker wage trajectories by nationality") 
             print(f"  • Examine the impact of green card conversions on nationality composition")
+            if config.country_cap_enabled:
+                print(f"  • Analyze per-country conversion patterns and queue backlogs")
+                print(f"  • Compare results with --no-country-cap to see impact of 7% rule")
+            else:
+                print(f"  • Try running with --country-cap to see impact of 7% per-country limit")
             print(f"  • Use --export-nationality-report for detailed nationality analysis")
         
         return 0

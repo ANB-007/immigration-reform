@@ -2,7 +2,7 @@
 """
 Utility functions for the workforce simulation.
 Handles I/O, data serialization, and live data fetching.
-Updated for SPEC-4 nationality segmentation functionality.
+Updated for SPEC-5 per-country cap functionality.
 """
 
 import csv
@@ -23,7 +23,7 @@ def save_simulation_results(states: List[SimulationState], output_path: str,
                           include_nationality_columns: bool = True) -> None:
     """
     Save simulation results to CSV file.
-    Updated for SPEC-4 to include nationality statistics columns.
+    Updated for SPEC-5 to include per-country conversion and backlog columns.
     
     Args:
         states: List of SimulationState objects
@@ -41,9 +41,14 @@ def save_simulation_results(states: List[SimulationState], output_path: str,
             'avg_wage_total', 'avg_wage_permanent', 'avg_wage_temporary', 'total_wage_bill'  # FROM SPEC-3
         ]
         
-        # Add nationality column if requested (NEW FOR SPEC-4)
+        # Add nationality columns if requested (FROM SPEC-4)
         if include_nationality_columns:
-            fieldnames.append('top_temp_nationalities')
+            fieldnames.extend(['top_temp_nationalities'])
+        
+        # Add per-country cap columns if any state has them (NEW FOR SPEC-5)
+        has_country_cap_data = any(state.country_cap_enabled for state in states)
+        if has_country_cap_data:
+            fieldnames.extend(['converted_by_country', 'queue_backlog_by_country'])
         
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -63,11 +68,21 @@ def save_simulation_results(states: List[SimulationState], output_path: str,
                 'total_wage_bill': f"{state.total_wage_bill:.2f}"
             }
             
-            # Add nationality data if requested (NEW FOR SPEC-4)
+            # Add nationality data if requested (FROM SPEC-4)
             if include_nationality_columns:
-                # Convert nationality dict to JSON string
                 nationality_str = json.dumps(state.top_temp_nationalities) if state.top_temp_nationalities else "{}"
                 row['top_temp_nationalities'] = nationality_str
+            
+            # Add per-country cap data if available (NEW FOR SPEC-5)
+            if has_country_cap_data:
+                if state.country_cap_enabled:
+                    conversions_str = json.dumps(state.converted_by_country) if state.converted_by_country else "{}"
+                    backlogs_str = json.dumps(state.queue_backlog_by_country) if state.queue_backlog_by_country else "{}"
+                    row['converted_by_country'] = conversions_str
+                    row['queue_backlog_by_country'] = backlogs_str
+                else:
+                    row['converted_by_country'] = "{}"
+                    row['queue_backlog_by_country'] = "{}"
             
             writer.writerow(row)
     
@@ -76,7 +91,7 @@ def save_simulation_results(states: List[SimulationState], output_path: str,
 def load_simulation_results(input_path: str) -> List[SimulationState]:
     """
     Load simulation results from CSV file.
-    Updated for SPEC-4 to handle nationality statistics columns.
+    Updated for SPEC-5 to handle per-country cap columns.
     
     Args:
         input_path: Path to input CSV file
@@ -89,14 +104,14 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
     with open(input_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            # Handle both old format (without wage/nationality columns) and new format
+            # Handle various format versions (backward compatibility)
             converted_temps = int(row.get('converted_temps', 0))
             avg_wage_total = float(row.get('avg_wage_total', 0.0))
             avg_wage_permanent = float(row.get('avg_wage_permanent', 0.0))
             avg_wage_temporary = float(row.get('avg_wage_temporary', 0.0))
             total_wage_bill = float(row.get('total_wage_bill', 0.0))
             
-            # Parse nationality data (NEW FOR SPEC-4)
+            # Parse nationality data (FROM SPEC-4)
             top_temp_nationalities = {}
             if 'top_temp_nationalities' in row:
                 try:
@@ -105,6 +120,32 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
                         top_temp_nationalities = json.loads(nationality_str)
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse nationality data for year {row['year']}")
+            
+            # Parse per-country cap data (NEW FOR SPEC-5)
+            converted_by_country = {}
+            queue_backlog_by_country = {}
+            country_cap_enabled = False
+            
+            if 'converted_by_country' in row:
+                try:
+                    conversions_str = row['converted_by_country']
+                    if conversions_str and conversions_str != "{}":
+                        converted_by_country = json.loads(conversions_str)
+                        # Convert string values back to integers
+                        converted_by_country = {k: int(v) for k, v in converted_by_country.items()}
+                        country_cap_enabled = True
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse conversion data for year {row['year']}")
+            
+            if 'queue_backlog_by_country' in row:
+                try:
+                    backlogs_str = row['queue_backlog_by_country']
+                    if backlogs_str and backlogs_str != "{}":
+                        queue_backlog_by_country = json.loads(backlogs_str)
+                        # Convert string values back to integers
+                        queue_backlog_by_country = {k: int(v) for k, v in queue_backlog_by_country.items()}
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to parse backlog data for year {row['year']}")
             
             state = SimulationState(
                 year=int(row['year']),
@@ -118,7 +159,10 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
                 avg_wage_permanent=avg_wage_permanent,
                 avg_wage_temporary=avg_wage_temporary,
                 total_wage_bill=total_wage_bill,
-                top_temp_nationalities=top_temp_nationalities
+                top_temp_nationalities=top_temp_nationalities,
+                converted_by_country=converted_by_country,  # NEW FOR SPEC-5
+                queue_backlog_by_country=queue_backlog_by_country,  # NEW FOR SPEC-5
+                country_cap_enabled=country_cap_enabled  # NEW FOR SPEC-5
             )
             states.append(state)
     
@@ -162,7 +206,7 @@ def deserialize_agents(input_path: str) -> List[Worker]:
 def fetch_live_data() -> Optional[Dict[str, Any]]:
     """
     Fetch current workforce and H-1B statistics from authoritative sources.
-    Updated for SPEC-4 to include nationality distribution data.
+    Updated for SPEC-5 to include per-country cap information.
     
     This function attempts to get real-time data when --live-fetch is enabled.
     Falls back gracefully if data is unavailable.
@@ -174,8 +218,8 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
     timestamp = datetime.now().isoformat()
     
     try:
-        # Attempt to fetch employment, wage, and nationality data
-        logger.info("Attempting to fetch live employment, wage, and nationality data...")
+        # Attempt to fetch employment, wage, nationality, and per-country cap data
+        logger.info("Attempting to fetch live employment, wage, nationality, and per-country cap data...")
         
         # For demo purposes, we'll simulate successful fetch with current known values
         # In production, this would make actual API calls to:
@@ -186,6 +230,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
         # - USCIS H-1B Nationality Distribution data
         # - DOL H-1B Disclosure Data by Country of Birth
         # - USCIS Green Card statistics API
+        # - Immigration and Nationality Act Section 203(b) data
         
         live_data = {
             "labor_force_size": 171000000,  # ~171M as of Aug 2025
@@ -197,7 +242,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             "it_median_wage": 95000,  # IT sector median wage from BLS OES
             "annual_job_mobility_rate": 0.10,  # BLS JOLTS annual mobility rate
             "temp_mobility_penalty": 0.20,  # Hunt research finding
-            # NEW FOR SPEC-4: Nationality distribution data
+            # FROM SPEC-4: Nationality distribution data
             "h1b_nationality_distribution": {
                 "India": 0.72,
                 "China": 0.09,
@@ -210,6 +255,16 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
                 "Germany": 0.01,
                 "Other": 0.04
             },
+            # NEW FOR SPEC-5: Per-country cap information
+            "per_country_cap_rate": 0.07,  # 7% per-country limit (INA Section 203(b))
+            "per_country_cap_enabled_default": False,  # Most recent policy setting
+            "green_card_backlog_by_country": {
+                "India": 450000,  # Estimated current backlog
+                "China": 85000,
+                "Philippines": 35000,
+                "Vietnam": 15000,
+                "South Korea": 8000
+            },
             "data_timestamp": timestamp,
             "sources": [
                 "BLS Employment Situation Report August 2025",
@@ -219,6 +274,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
                 "USCIS H-1B Nationality Distribution FY 2024",
                 "DOL H-1B Disclosure Data by Country of Birth 2024",
                 "USCIS Employment-Based Green Card FY 2024 Reports",
+                "Immigration and Nationality Act Section 203(b) Per-Country Limitation",
                 "Jennifer Hunt Research on Temporary Worker Mobility",
                 "American Immigration Council 2024 Data"
             ]
@@ -230,7 +286,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             live_data["annual_h1b_entry_rate"] = live_data["h1b_approvals_latest"] / live_data["labor_force_size"]
             live_data["green_card_proportion"] = live_data["green_card_cap"] / live_data["labor_force_size"]
         
-        # Normalize nationality distribution (NEW FOR SPEC-4)
+        # Normalize nationality distribution (FROM SPEC-4)
         nationality_dist = live_data["h1b_nationality_distribution"]
         total = sum(nationality_dist.values())
         if abs(total - 1.0) > 1e-6:
@@ -238,7 +294,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
                 nationality_dist[nationality] /= total
             logger.info("Normalized live nationality distribution")
         
-        logger.info("Successfully fetched live workforce, wage, and nationality data")
+        logger.info("Successfully fetched live workforce, wage, nationality, and per-country cap data")
         return live_data
         
     except requests.exceptions.RequestException as e:
@@ -250,7 +306,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
 
 def update_nationality_distribution(live_data: Dict[str, Any]) -> Dict[str, float]:
     """
-    Update nationality distribution from live data (NEW FOR SPEC-4).
+    Update nationality distribution from live data (FROM SPEC-4).
     
     Args:
         live_data: Dictionary containing live fetched data
@@ -266,34 +322,35 @@ def update_nationality_distribution(live_data: Dict[str, Any]) -> Dict[str, floa
 def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
     """
     Print data sources and citations to stdout.
-    Updated for SPEC-4 to include nationality data sources.
+    Updated for SPEC-5 to include per-country cap sources.
     
     Args:
         live_data: Optional live data dictionary with sources
     """
-    print("\\n" + "="*60)
+    print("\n" + "="*60)
     print("DATA SOURCES AND CITATIONS")
     print("="*60)
     
     if live_data and "sources" in live_data:
-        print("\\nLive data sources (fetched at runtime):")
+        print("\nLive data sources (fetched at runtime):")
         for source in live_data["sources"]:
             print(f"  • {source}")
-        print(f"\\nData timestamp: {live_data.get('data_timestamp', 'Unknown')}")
+        print(f"\nData timestamp: {live_data.get('data_timestamp', 'Unknown')}")
     else:
-        print("\\nDefault empirical data sources:")
+        print("\nDefault empirical data sources:")
         print("  • U.S. Bureau of Labor Statistics Employment Situation August 2025")
         print("  • BLS Job Openings and Labor Turnover Survey (JOLTS) 2024")
         print("  • BLS Occupational Employment Statistics IT Sector 2024")
         print("  • USCIS H-1B Visa FY 2024 Reports and Data")
-        print("  • USCIS H-1B Nationality Distribution FY 2024")  # NEW FOR SPEC-4
-        print("  • DOL H-1B Disclosure Data by Country of Birth 2024")  # NEW FOR SPEC-4
+        print("  • USCIS H-1B Nationality Distribution FY 2024")  # FROM SPEC-4
+        print("  • DOL H-1B Disclosure Data by Country of Birth 2024")  # FROM SPEC-4
         print("  • USCIS Employment-Based Green Card FY 2024 Reports")
+        print("  • Immigration and Nationality Act Section 203(b) Per-Country Limitation")  # NEW FOR SPEC-5
         print("  • Jennifer Hunt Research on Temporary Worker Job Mobility")
         print("  • American Immigration Council H-1B Analysis 2024")
         print("  • National Foundation for American Policy H-1B Analysis 2024")
     
-    print("\\nKey statistics:")
+    print("\nKey statistics:")
     if live_data:
         print(f"  • Labor force size: {live_data.get('labor_force_size', 'N/A'):,}")
         print(f"  • Labor participation rate: {live_data.get('labor_participation_rate', 'N/A'):.1%}")
@@ -303,12 +360,24 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print(f"  • IT sector median wage: ${live_data.get('it_median_wage', 'N/A'):,}")
         print(f"  • Annual job mobility rate: {live_data.get('annual_job_mobility_rate', 'N/A'):.1%}")
         
-        # NEW FOR SPEC-4: Print nationality distribution
+        # FROM SPEC-4: Print nationality distribution
         if "h1b_nationality_distribution" in live_data:
-            print("\\nH-1B nationality distribution:")
+            print("\nH-1B nationality distribution:")
             dist = live_data["h1b_nationality_distribution"]
             for nationality, proportion in sorted(dist.items(), key=lambda x: x[1], reverse=True):
                 print(f"    {nationality}: {proportion:.1%}")
+        
+        # NEW FOR SPEC-5: Print per-country cap information
+        if "per_country_cap_rate" in live_data:
+            print(f"\nPer-country cap information:")
+            print(f"  • Per-country cap rate: {live_data['per_country_cap_rate']:.1%}")
+            print(f"  • Default cap setting: {'Enabled' if live_data.get('per_country_cap_enabled_default') else 'Disabled'}")
+            
+            if "green_card_backlog_by_country" in live_data:
+                print("  • Current green card backlogs:")
+                backlogs = live_data["green_card_backlog_by_country"]
+                for nationality, backlog in sorted(backlogs.items(), key=lambda x: x[1], reverse=True):
+                    print(f"      {nationality}: {backlog:,} workers")
     else:
         print("  • Labor force size: ~171 million (Aug 2025)")
         print("  • Labor participation rate: 62.3% (Aug 2025)")
@@ -319,18 +388,23 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print("  • Job change probability (permanent): 10% annually")
         print("  • Job change penalty (temporary): 20% (Hunt research)")
         
-        # NEW FOR SPEC-4: Print default nationality distribution
-        print("\\nDefault H-1B nationality distribution:")
+        # FROM SPEC-4: Print default nationality distribution
+        print("\nDefault H-1B nationality distribution:")
         for nationality, proportion in sorted(TEMP_NATIONALITY_DISTRIBUTION.items(), 
                                            key=lambda x: x[1], reverse=True):
             print(f"    {nationality}: {proportion:.1%}")
+        
+        # NEW FOR SPEC-5: Print per-country cap defaults
+        print("\nPer-country cap defaults:")
+        print("  • Per-country cap rate: 7.0% (INA Section 203(b))")
+        print("  • Default cap setting: Disabled (use --country-cap to enable)")
     
     print("="*60)
 
 def validate_configuration(config: SimulationConfig) -> List[str]:
     """
     Validate simulation configuration parameters.
-    Updated for SPEC-4 to include nationality-related validation.
+    Updated for SPEC-5 to include per-country cap validation.
     
     Args:
         config: SimulationConfig to validate
@@ -355,6 +429,10 @@ def validate_configuration(config: SimulationConfig) -> List[str]:
     # FROM SPEC-3: Agent-mode performance warnings
     if config.agent_mode and config.initial_workers > 500000:
         errors.append("Agent-mode with >500K workers may be very slow. Consider count-mode.")
+    
+    # NEW FOR SPEC-5: Per-country cap specific warnings
+    if config.country_cap_enabled and config.initial_workers < 1000:
+        errors.append("Per-country cap with <1000 workers may show high discretization effects")
     
     # Check output path is writable
     try:
@@ -416,7 +494,7 @@ def calculate_wage_percentiles(workers: List[Worker], percentiles: List[float] =
 
 def calculate_nationality_diversity_index(workers: List[Worker]) -> float:
     """
-    Calculate nationality diversity using Simpson's diversity index (NEW FOR SPEC-4).
+    Calculate nationality diversity using Simpson's diversity index (FROM SPEC-4).
     
     Args:
         workers: List of Worker objects
@@ -440,7 +518,7 @@ def calculate_nationality_diversity_index(workers: List[Worker]) -> float:
 
 def export_nationality_report(workers: List[Worker], output_path: str) -> None:
     """
-    Export detailed nationality report to CSV (NEW FOR SPEC-4).
+    Export detailed nationality report to CSV (FROM SPEC-4).
     
     Args:
         workers: List of Worker objects
@@ -489,3 +567,92 @@ def export_nationality_report(workers: List[Worker], output_path: str) -> None:
             })
     
     logger.info(f"Exported nationality report to {output_path}")
+
+def export_country_cap_analysis(states: List[SimulationState], output_path: str) -> None:
+    """
+    Export per-country cap analysis to CSV (NEW FOR SPEC-5).
+    
+    Args:
+        states: List of SimulationState objects
+        output_path: Path to output CSV file
+    """
+    # Ensure output directory exists
+    output_dir = Path(output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Only include states where country cap was enabled
+    cap_states = [state for state in states if state.country_cap_enabled]
+    
+    if not cap_states:
+        logger.warning("No states with country cap enabled found for analysis")
+        return
+    
+    # Collect all nationalities that had conversions or backlogs
+    all_nationalities = set()
+    for state in cap_states:
+        all_nationalities.update(state.converted_by_country.keys())
+        all_nationalities.update(state.queue_backlog_by_country.keys())
+    
+    # Write to CSV
+    with open(output_path, 'w', newline='') as csvfile:
+        fieldnames = ['year', 'nationality', 'conversions', 'queue_backlog']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for state in cap_states:
+            for nationality in sorted(all_nationalities):
+                conversions = state.converted_by_country.get(nationality, 0)
+                backlog = state.queue_backlog_by_country.get(nationality, 0)
+                
+                # Only write rows with non-zero data
+                if conversions > 0 or backlog > 0:
+                    writer.writerow({
+                        'year': state.year,
+                        'nationality': nationality,
+                        'conversions': conversions,
+                        'queue_backlog': backlog
+                    })
+    
+    logger.info(f"Exported per-country cap analysis to {output_path}")
+
+def analyze_conversion_queue_efficiency(states: List[SimulationState]) -> Dict[str, Any]:
+    """
+    Analyze conversion queue efficiency and backlog growth (NEW FOR SPEC-5).
+    
+    Args:
+        states: List of SimulationState objects
+        
+    Returns:
+        Dictionary with efficiency metrics
+    """
+    if not states or not any(state.country_cap_enabled for state in states):
+        return {"error": "No per-country cap data available"}
+    
+    cap_states = [state for state in states if state.country_cap_enabled]
+    
+    # Calculate metrics
+    total_conversions = sum(state.converted_temps for state in cap_states)
+    final_backlogs = cap_states[-1].queue_backlog_by_country if cap_states else {}
+    
+    # Calculate backlog growth rates by country
+    backlog_growth_rates = {}
+    if len(cap_states) > 1:
+        initial_backlogs = cap_states[0].queue_backlog_by_country
+        final_backlogs = cap_states[-1].queue_backlog_by_country
+        
+        all_countries = set(initial_backlogs.keys()) | set(final_backlogs.keys())
+        for country in all_countries:
+            initial = initial_backlogs.get(country, 0)
+            final = final_backlogs.get(country, 0)
+            
+            if initial > 0:
+                growth_rate = (final / initial) ** (1 / len(cap_states)) - 1
+                backlog_growth_rates[country] = growth_rate
+    
+    return {
+        "total_conversions": total_conversions,
+        "final_total_backlog": sum(final_backlogs.values()),
+        "countries_with_backlogs": len([b for b in final_backlogs.values() if b > 0]),
+        "backlog_growth_rates": backlog_growth_rates,
+        "years_analyzed": len(cap_states)
+    }

@@ -2,12 +2,13 @@
 """
 Data models for the workforce simulation.
 Defines Worker agents and related data structures.
-Updated for SPEC-4 to include nationality tracking.
+Updated for SPEC-5 to include per-country cap functionality.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Deque
 from enum import Enum
+from collections import deque
 
 from .empirical_params import STARTING_WAGE, PERMANENT_NATIONALITY
 
@@ -20,12 +21,12 @@ class WorkerStatus(Enum):
 class Worker:
     """
     Represents a single worker agent in the simulation.
-    Updated for SPEC-4 to include nationality tracking.
+    Updated for SPEC-5 with per-country cap considerations.
     
     Attributes:
         id: Unique identifier for the worker
         status: Worker status (permanent or temporary/H-1B)
-        nationality: Worker's nationality (immutable) (NEW FOR SPEC-4)
+        nationality: Worker's nationality (immutable) (FROM SPEC-4)
         age: Age of the worker in years
         year_joined: Year the worker joined as temporary (for FIFO conversion)
         wage: Current wage in USD per year (FROM SPEC-3)
@@ -38,7 +39,7 @@ class Worker:
     """
     id: int
     status: WorkerStatus
-    nationality: str  # NEW FOR SPEC-4: Immutable nationality
+    nationality: str  # FROM SPEC-4: Immutable nationality
     age: int = 35  # Default age
     year_joined: int = 2025  # Year joined as temporary worker
     wage: float = STARTING_WAGE  # FROM SPEC-3: Current wage in USD per year
@@ -80,7 +81,7 @@ class Worker:
     
     @property
     def is_us_national(self) -> bool:
-        """Returns True if worker is a U.S. national (NEW FOR SPEC-4)."""
+        """Returns True if worker is a U.S. national (FROM SPEC-4)."""
         return self.nationality == PERMANENT_NATIONALITY
     
     def years_in_workforce(self, current_year: int) -> int:
@@ -109,7 +110,7 @@ class Worker:
     
     def convert_to_permanent(self) -> None:
         """
-        Convert worker from temporary to permanent status (NEW FOR SPEC-4).
+        Convert worker from temporary to permanent status (FROM SPEC-4).
         Nationality remains unchanged as per SPEC-4 requirements.
         """
         if self.status == WorkerStatus.TEMPORARY:
@@ -121,7 +122,7 @@ class Worker:
 class SimulationState:
     """
     Represents the state of the simulation at a given time step.
-    Updated for SPEC-4 to include nationality statistics.
+    Updated for SPEC-5 to include per-country cap statistics.
     
     Attributes:
         year: Current simulation year
@@ -135,7 +136,10 @@ class SimulationState:
         avg_wage_permanent: Average wage for permanent workers (FROM SPEC-3)
         avg_wage_temporary: Average wage for temporary workers (FROM SPEC-3)
         total_wage_bill: Total wages paid to all workers (FROM SPEC-3)
-        top_temp_nationalities: Top 3 nationalities for temporary workers (NEW FOR SPEC-4)
+        top_temp_nationalities: Top 3 nationalities for temporary workers (FROM SPEC-4)
+        converted_by_country: Conversions by nationality this year (NEW FOR SPEC-5)
+        queue_backlog_by_country: Queue backlogs by nationality (NEW FOR SPEC-5)
+        country_cap_enabled: Whether per-country cap is active (NEW FOR SPEC-5)
     """
     year: int
     total_workers: int
@@ -148,7 +152,10 @@ class SimulationState:
     avg_wage_permanent: float = 0.0  # FROM SPEC-3
     avg_wage_temporary: float = 0.0  # FROM SPEC-3
     total_wage_bill: float = 0.0  # FROM SPEC-3
-    top_temp_nationalities: Dict[str, float] = field(default_factory=dict)  # NEW FOR SPEC-4
+    top_temp_nationalities: Dict[str, float] = field(default_factory=dict)  # FROM SPEC-4
+    converted_by_country: Dict[str, int] = field(default_factory=dict)  # NEW FOR SPEC-5
+    queue_backlog_by_country: Dict[str, int] = field(default_factory=dict)  # NEW FOR SPEC-5
+    country_cap_enabled: bool = False  # NEW FOR SPEC-5
     
     def __post_init__(self):
         """Validation of state consistency."""
@@ -164,6 +171,13 @@ class SimulationState:
         if any(wage < 0 for wage in [self.avg_wage_total, self.avg_wage_permanent, 
                                    self.avg_wage_temporary, self.total_wage_bill]):
             raise ValueError("All wage statistics must be non-negative")
+        
+        # Validate per-country statistics (NEW FOR SPEC-5)
+        if any(count < 0 for count in self.converted_by_country.values()):
+            raise ValueError("All conversion counts must be non-negative")
+        
+        if any(count < 0 for count in self.queue_backlog_by_country.values()):
+            raise ValueError("All queue backlog counts must be non-negative")
 
     @property 
     def h1b_share(self) -> float:
@@ -188,7 +202,8 @@ class SimulationConfig:
     live_fetch: bool = False
     output_path: str = "data/sample_output.csv"
     agent_mode: bool = True  # FROM SPEC-3: Default to agent-mode for wage tracking
-    show_nationality_summary: bool = False  # NEW FOR SPEC-4: Show nationality breakdown
+    show_nationality_summary: bool = False  # FROM SPEC-4: Show nationality breakdown
+    country_cap_enabled: bool = False  # NEW FOR SPEC-5: Enable per-country cap
     
     def __post_init__(self):
         """Validation of configuration parameters."""
@@ -202,9 +217,11 @@ class TemporaryWorker:
     """
     Represents a temporary worker in the conversion queue (FROM SPEC-2).
     Used for FIFO ordering of temporary-to-permanent conversions.
+    Updated for SPEC-5 to support per-country queuing.
     """
     worker_id: int
     year_joined: int
+    nationality: str = ""  # NEW FOR SPEC-5: Added for per-country queue management
     
     def __lt__(self, other):
         """Less than comparison for sorting (earlier year_joined comes first)."""
@@ -269,7 +286,7 @@ class WageStatistics:
 @dataclass
 class NationalityStatistics:
     """
-    Container for nationality distribution statistics (NEW FOR SPEC-4).
+    Container for nationality distribution statistics (FROM SPEC-4).
     """
     total_workers: int
     permanent_nationalities: Dict[str, int]
@@ -333,3 +350,75 @@ class NationalityStatistics:
         distribution = self.get_temporary_distribution()
         sorted_nationalities = sorted(distribution.items(), key=lambda x: x[1], reverse=True)
         return dict(sorted_nationalities[:n])
+
+@dataclass
+class CountryCapStatistics:
+    """
+    Container for per-country cap statistics (NEW FOR SPEC-5).
+    """
+    total_conversions: int
+    conversions_by_country: Dict[str, int]
+    queue_backlogs: Dict[str, int]
+    per_country_limit: int
+    cap_enabled: bool
+    
+    @classmethod
+    def calculate(cls, country_queues: Dict[str, Deque[TemporaryWorker]], 
+                 conversions_by_country: Dict[str, int], 
+                 per_country_limit: int, cap_enabled: bool) -> 'CountryCapStatistics':
+        """
+        Calculate per-country cap statistics.
+        
+        Args:
+            country_queues: Dictionary mapping nationality to conversion queue
+            conversions_by_country: Conversions by nationality this year
+            per_country_limit: Maximum conversions per country this year
+            cap_enabled: Whether per-country cap is active
+            
+        Returns:
+            CountryCapStatistics object
+        """
+        total_conversions = sum(conversions_by_country.values())
+        queue_backlogs = {
+            nationality: len(queue) 
+            for nationality, queue in country_queues.items()
+        }
+        
+        return cls(
+            total_conversions=total_conversions,
+            conversions_by_country=conversions_by_country.copy(),
+            queue_backlogs=queue_backlogs,
+            per_country_limit=per_country_limit,
+            cap_enabled=cap_enabled
+        )
+    
+    def get_utilization_by_country(self) -> Dict[str, float]:
+        """
+        Calculate cap utilization rate by country.
+        
+        Returns:
+            Dictionary mapping nationality to utilization rate (0.0 to 1.0)
+        """
+        if not self.cap_enabled or self.per_country_limit == 0:
+            return {}
+        
+        return {
+            nationality: conversions / self.per_country_limit
+            for nationality, conversions in self.conversions_by_country.items()
+            if conversions > 0
+        }
+    
+    def get_countries_at_cap(self) -> List[str]:
+        """
+        Get list of countries that hit their per-country cap.
+        
+        Returns:
+            List of nationality strings that reached the cap
+        """
+        if not self.cap_enabled:
+            return []
+        
+        return [
+            nationality for nationality, conversions in self.conversions_by_country.items()
+            if conversions >= self.per_country_limit
+        ]

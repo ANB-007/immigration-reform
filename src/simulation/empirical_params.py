@@ -12,6 +12,7 @@ Data sources (as of October 2025):
 - Jennifer Hunt research on temporary worker job mobility
 - USCIS H-1B Nationality Distribution FY 2024
 - DOL H-1B Disclosure Data by Country of Birth 2024
+- INA Section 203(b) Per-Country Limitation (7% rule)
 """
 
 # Technical requirements
@@ -35,7 +36,7 @@ TEMP_JOB_CHANGE_PENALTY = 0.20  # Temporary workers are 20% less likely to chang
 WAGE_JUMP_FACTOR_MEAN = 1.08    # Mean 8% wage boost on job change (float)
 WAGE_JUMP_FACTOR_STD = 0.02     # Standard deviation for wage jump stochasticity (float)
 
-# Nationality distributions (NEW FOR SPEC-4)
+# Nationality distributions (FROM SPEC-4)
 # Real-world shares based on USCIS H-1B data and DOL disclosure data (FY 2024 figures)
 TEMP_NATIONALITY_DISTRIBUTION = {
     "India": 0.70,
@@ -50,7 +51,7 @@ TEMP_NATIONALITY_DISTRIBUTION = {
     "Other": 0.05,
 }
 
-# Default nationality for permanent (domestic) workers (NEW FOR SPEC-4)
+# Default nationality for permanent (domestic) workers (FROM SPEC-4)
 PERMANENT_NATIONALITY = "United States"
 
 # H-1B workforce proportions (based on current research)
@@ -70,6 +71,11 @@ ANNUAL_H1B_ENTRY_RATE = 0.0008         # H-1B entry rate based on 2024 approvals
 GREEN_CARD_CAP_ABS = 140_000           # Real-world annual employment-based green card cap
 REAL_US_WORKFORCE_SIZE = 171_000_000   # Current US workforce size (August 2025)
 
+# Per-country cap parameters (NEW FOR SPEC-5)
+# Based on INA Section 203(b) - Immigration and Nationality Act per-country limitation
+PER_COUNTRY_CAP_SHARE = 0.07           # 7% per-country limit on employment-based green cards
+ENABLE_COUNTRY_CAP = False             # Toggle for per-country cap (can be overridden by CLI)
+
 # Simulation configuration
 DEFAULT_YEARS = 30
 TIMESTEP_YEARS = 1
@@ -82,6 +88,7 @@ DATA_SOURCES = {
     "uscis_h1b_nationality": "USCIS H-1B Nationality Distribution FY 2024",
     "dol_h1b_disclosure": "DOL H-1B Disclosure Data by Country of Birth 2024",
     "uscis_green_cards": "USCIS Employment-Based Green Card FY 2024 Reports",
+    "ina_per_country": "Immigration and Nationality Act Section 203(b) Per-Country Limitation",
     "labor_force_size": "171 million (Aug 2025)",
     "h1b_approvals_2024": "141,181 new petitions",
     "green_card_cap_2024": "140,000 annual employment-based cap",
@@ -99,10 +106,11 @@ VALID_RANGES = {
     "starting_wage": (50000, 200000),  # Reasonable wage range for IT sector
     "job_change_prob": (0.01, 0.30),   # 1% to 30% annual job change probability
     "wage_jump_factor": (1.01, 1.25),  # 1% to 25% wage jump on job change
-    "nationality_distribution_sum": (0.999, 1.001)  # Distribution must sum to ~1.0
+    "nationality_distribution_sum": (0.999, 1.001),  # Distribution must sum to ~1.0
+    "per_country_cap_share": (0.01, 0.20)  # Per-country cap between 1% and 20%
 }
 
-# Validation function for nationality distribution (NEW FOR SPEC-4)
+# Validation function for nationality distribution (FROM SPEC-4)
 def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-6) -> bool:
     """
     Validate that nationality distribution sums to 1.0 within tolerance.
@@ -120,3 +128,7 @@ def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-
 # Validate the default distribution
 if not validate_nationality_distribution(TEMP_NATIONALITY_DISTRIBUTION):
     raise ValueError(f"TEMP_NATIONALITY_DISTRIBUTION does not sum to 1.0: {sum(TEMP_NATIONALITY_DISTRIBUTION.values())}")
+
+# Validation for per-country cap parameters (NEW FOR SPEC-5)
+if not (0.01 <= PER_COUNTRY_CAP_SHARE <= 0.20):
+    raise ValueError(f"PER_COUNTRY_CAP_SHARE must be between 1% and 20%, got {PER_COUNTRY_CAP_SHARE}")
