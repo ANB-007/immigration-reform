@@ -1,8 +1,8 @@
-# Also fix the CLI file - it has the same escaping issues
 # src/simulation/cli.py
 """
 Command-line interface for the workforce growth simulation.
 Provides a user-friendly way to run simulations with various parameters.
+Updated for SPEC-2 temporary-to-permanent conversion functionality.
 """
 
 import sys
@@ -20,13 +20,13 @@ from .utils import (
 from .empirical_params import (
     DEFAULT_YEARS, DEFAULT_SEED, H1B_SHARE, 
     ANNUAL_PERMANENT_ENTRY_RATE, ANNUAL_H1B_ENTRY_RATE,
-    PYTHON_MIN_VERSION
+    PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE
 )
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics",
+        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with green card conversions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -98,7 +98,10 @@ def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
     )
 
 def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None) -> None:
-    """Print simulation header with parameters."""
+    """
+    Print simulation header with parameters.
+    Updated for SPEC-2 to show green card conversion information.
+    """
     print("\\n" + "="*60)
     print("WORKFORCE GROWTH SIMULATION")
     print("="*60)
@@ -107,10 +110,19 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     print(f"Random seed: {config.seed or 'None (random)'}")
     print(f"Output file: {config.output_path}")
     
+    # NEW FOR SPEC-2: Show green card conversion cap
+    cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
+    annual_cap = round(config.initial_workers * cap_proportion)
+    print(f"\\nGreen card conversion cap:")
+    print(f"  Annual conversions: {annual_cap} ({format_percentage(cap_proportion, 4)})")
+    print(f"  Based on US cap: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)}")
+    
     if live_data:
         print("\\nUsing live-fetched data:")
         print(f"  H-1B share: {format_percentage(live_data.get('h1b_share', H1B_SHARE))}")
         print(f"  Annual H-1B entry rate: {format_percentage(live_data.get('annual_h1b_entry_rate', ANNUAL_H1B_ENTRY_RATE))}")
+        if 'green_card_cap' in live_data:
+            print(f"  Green card cap: {format_number(live_data['green_card_cap'])}")
     else:
         print("\\nUsing default empirical parameters:")
         print(f"  H-1B share: {format_percentage(H1B_SHARE)}")
@@ -120,7 +132,10 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     print("="*60)
 
 def print_simulation_results(simulation: Simulation) -> None:
-    """Print summary of simulation results."""
+    """
+    Print summary of simulation results.
+    Updated for SPEC-2 to show conversion statistics.
+    """
     stats = simulation.get_summary_stats()
     
     print("\\n" + "="*60)
@@ -137,9 +152,16 @@ def print_simulation_results(simulation: Simulation) -> None:
     print(f"  Final H-1B share: {format_percentage(stats['final_h1b_share'])}")
     print(f"  H-1B share change: {format_percentage(stats['h1b_share_change'], 3)}")
     
-    print("\\nNew workers added:")
-    print(f"  Total permanent: {format_number(stats['total_new_permanent'])}")
-    print(f"  Total temporary: {format_number(stats['total_new_temporary'])}")
+    print("\\nWorker flows:")
+    print(f"  Total permanent entries: {format_number(stats['total_new_permanent'])}")
+    print(f"  Total temporary entries: {format_number(stats['total_new_temporary'])}")
+    print(f"  Total conversions (temp→perm): {format_number(stats['total_conversions'])}")  # NEW FOR SPEC-2
+    
+    # NEW FOR SPEC-2: Conversion utilization statistics
+    print("\\nConversion statistics:")
+    print(f"  Annual conversion cap: {format_number(stats['annual_conversion_cap'])}")
+    print(f"  Cap utilization: {format_percentage(stats['conversion_utilization'])}")
+    
     print("="*60)
 
 def main() -> int:
@@ -205,9 +227,13 @@ def main() -> int:
             print_simulation_results(simulation)
             print_data_sources(live_data)
         
-        # Validation check
+        # Validation checks
         if not simulation.validate_proportional_growth():
             logger.warning("Proportional growth validation failed - check parameters")
+        
+        # NEW FOR SPEC-2: Validate conversion consistency
+        if not simulation.validate_conversion_consistency():
+            logger.warning("Conversion consistency validation failed - check implementation")
         
         if not args.quiet:
             print(f"\\nSimulation completed successfully!")
@@ -227,4 +253,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

@@ -1,10 +1,8 @@
-# Fix the syntax error in utils.py - there's an unterminated string
-# Let me recreate the file with proper escaping
-
 # src/simulation/utils.py
 """
 Utility functions for the workforce simulation.
 Handles I/O, data serialization, and live data fetching.
+Updated for SPEC-2 temporary-to-permanent conversion functionality.
 """
 
 import csv
@@ -23,6 +21,7 @@ logger = logging.getLogger(__name__)
 def save_simulation_results(states: List[SimulationState], output_path: str) -> None:
     """
     Save simulation results to CSV file.
+    Updated for SPEC-2 to include converted_temps column.
     
     Args:
         states: List of SimulationState objects
@@ -35,7 +34,7 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
     with open(output_path, 'w', newline='') as csvfile:
         fieldnames = [
             'year', 'total_workers', 'permanent_workers', 'temporary_workers',
-            'new_permanent', 'new_temporary'
+            'new_permanent', 'new_temporary', 'converted_temps'  # NEW FOR SPEC-2
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -47,7 +46,8 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
                 'permanent_workers': state.permanent_workers,
                 'temporary_workers': state.temporary_workers,
                 'new_permanent': state.new_permanent,
-                'new_temporary': state.new_temporary
+                'new_temporary': state.new_temporary,
+                'converted_temps': state.converted_temps  # NEW FOR SPEC-2
             })
     
     logger.info(f"Saved simulation results to {output_path}")
@@ -55,6 +55,7 @@ def save_simulation_results(states: List[SimulationState], output_path: str) -> 
 def load_simulation_results(input_path: str) -> List[SimulationState]:
     """
     Load simulation results from CSV file.
+    Updated for SPEC-2 to handle converted_temps column.
     
     Args:
         input_path: Path to input CSV file
@@ -67,13 +68,17 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
     with open(input_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
+            # Handle both old format (without converted_temps) and new format
+            converted_temps = int(row.get('converted_temps', 0))
+            
             state = SimulationState(
                 year=int(row['year']),
                 total_workers=int(row['total_workers']),
                 permanent_workers=int(row['permanent_workers']),
                 temporary_workers=int(row['temporary_workers']),
                 new_permanent=int(row['new_permanent']),
-                new_temporary=int(row['new_temporary'])
+                new_temporary=int(row['new_temporary']),
+                converted_temps=converted_temps
             )
             states.append(state)
     
@@ -117,6 +122,7 @@ def deserialize_agents(input_path: str) -> List[Worker]:
 def fetch_live_data() -> Optional[Dict[str, Any]]:
     """
     Fetch current workforce and H-1B statistics from authoritative sources.
+    Updated for SPEC-2 to include green card statistics.
     
     This function attempts to get real-time data when --live-fetch is enabled.
     Falls back gracefully if data is unavailable.
@@ -136,6 +142,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
         # In production, this would make actual API calls to:
         # - BLS Employment Situation API
         # - USCIS H-1B statistics API
+        # - USCIS Green Card statistics API
         # - Other authoritative sources
         
         live_data = {
@@ -143,10 +150,13 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
             "labor_participation_rate": 0.623,  # 62.3% as of Aug 2025
             "h1b_approvals_latest": 141181,  # FY 2024 new approvals
             "estimated_h1b_holders": 700000,  # Conservative estimate
+            "green_card_cap": 140000,  # FY 2024 employment-based cap
+            "green_card_issued": 120000,  # Approximate FY 2024 issuances
             "data_timestamp": timestamp,
             "sources": [
                 "BLS Employment Situation Report August 2025",
                 "USCIS H-1B FY 2024 Reports",
+                "USCIS Employment-Based Green Card FY 2024 Reports",
                 "American Immigration Council 2024 Data"
             ]
         }
@@ -155,6 +165,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
         if live_data["labor_force_size"] > 0:
             live_data["h1b_share"] = live_data["estimated_h1b_holders"] / live_data["labor_force_size"]
             live_data["annual_h1b_entry_rate"] = live_data["h1b_approvals_latest"] / live_data["labor_force_size"]
+            live_data["green_card_proportion"] = live_data["green_card_cap"] / live_data["labor_force_size"]
         
         logger.info("Successfully fetched live workforce data")
         return live_data
@@ -169,6 +180,7 @@ def fetch_live_data() -> Optional[Dict[str, Any]]:
 def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
     """
     Print data sources and citations to stdout.
+    Updated for SPEC-2 to include green card sources.
     
     Args:
         live_data: Optional live data dictionary with sources
@@ -186,6 +198,7 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print("\\nDefault empirical data sources:")
         print("  • U.S. Bureau of Labor Statistics Employment Situation August 2025")
         print("  • USCIS H-1B Visa FY 2024 Reports and Data")
+        print("  • USCIS Employment-Based Green Card FY 2024 Reports")  # NEW FOR SPEC-2
         print("  • American Immigration Council H-1B Analysis 2024")
         print("  • National Foundation for American Policy H-1B Analysis 2024")
     
@@ -195,11 +208,13 @@ def print_data_sources(live_data: Optional[Dict[str, Any]] = None) -> None:
         print(f"  • Labor participation rate: {live_data.get('labor_participation_rate', 'N/A'):.1%}")
         print(f"  • Estimated H-1B holders: {live_data.get('estimated_h1b_holders', 'N/A'):,}")
         print(f"  • H-1B share of workforce: {live_data.get('h1b_share', 'N/A'):.2%}")
+        print(f"  • Annual green card cap: {live_data.get('green_card_cap', 'N/A'):,}")  # NEW FOR SPEC-2
     else:
         print("  • Labor force size: ~171 million (Aug 2025)")
         print("  • Labor participation rate: 62.3% (Aug 2025)")
         print("  • H-1B approvals FY 2024: 141,181 new petitions")
         print("  • Estimated H-1B workforce share: ~0.41%")
+        print("  • Employment-based green card cap: 140,000 annually")  # NEW FOR SPEC-2
     
     print("="*60)
 
