@@ -1,0 +1,7 @@
+year,total_workers,permanent_workers,temporary_workers,new_permanent,new_temporary,converted_temps,avg_wage_total,avg_wage_permanent,avg_wage_temporary,total_wage_bill,top_temp_nationalities,converted_by_country,queue_backlog_by_country
+2025,1000,996,4,0,0,0,95000.00,95000.00,95000.00,95000000.00,"{""India"": 0.5, ""China"": 0.25, ""Philippines"": 0.25}",{},"{""India"": 2, ""China"": 1, ""Philippines"": 1}"
+2026,1025,1023,2,24,1,3,95698.62,95699.99,95000.00,98091085.72,"{""India"": 1.0}","{""India"": 1, ""China"": 1, ""Philippines"": 1}","{""India"": 2, ""China"": 0, ""Philippines"": 0}"
+2027,1051,1049,2,25,1,1,96516.63,96519.52,95000.00,101438973.46,"{""India"": 1.0}","{""India"": 1}","{""India"": 2, ""China"": 0, ""Philippines"": 0}"
+2028,1077,1075,2,25,1,1,97319.62,97323.94,95000.00,104813235.88,"{""India"": 1.0}","{""India"": 1}","{""India"": 2, ""China"": 0, ""Philippines"": 0}"
+2029,1104,1102,2,26,1,1,97927.97,97933.28,95000.00,108112475.28,"{""India"": 1.0}","{""India"": 1}","{""India"": 2, ""China"": 0, ""Philippines"": 0}"
+2030,1132,1130,2,27,1,1,98634.49,98640.92,95000.00,111654244.24,"{""India"": 1.0}","{""India"": 1}","{""India"": 2, ""China"": 0, ""Philippines"": 0}"

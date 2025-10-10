@@ -39,7 +39,7 @@ Examples:
   python -m src.simulation.cli --initial-workers 10000 --live-fetch --output results.csv
   python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
   python -m src.simulation.cli --initial-workers 10000 --show-nationality-summary  # Show nationality breakdown
-  python -m src.simulation.cli --initial-workers 10000 --country-cap  # Enable 7% per-country cap
+  python -m src.simulation.cli --initial-workers 10000 --country-cap  # Enable 7%% per-country cap
   python -m src.simulation.cli --initial-workers 10000 --no-country-cap  # Disable cap (default)
         """
     )
@@ -107,7 +107,7 @@ Examples:
     cap_group.add_argument(
         "--country-cap",
         action="store_true",
-        help="Enable 7% per-country limit on employment-based green cards"
+        help="Enable 7%% per-country limit on employment-based green cards"  # FIXED: Escaped %
     )
     cap_group.add_argument(
         "--no-country-cap",
@@ -151,7 +151,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     Print simulation header with parameters.
     Updated for SPEC-5 to show per-country cap information.
     """
-    print("\\n" + "="*60)
+    print("\n" + "="*60)
     print("WORKFORCE GROWTH SIMULATION")
     print("="*60)
     print(f"Industry: {INDUSTRY_NAME}")
@@ -163,19 +163,20 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     
     # Performance warning for large agent-mode simulations
     if config.agent_mode and config.initial_workers > 200000:
-        print(f"\\n⚠️  WARNING: Agent-mode with {format_number(config.initial_workers)} workers will be slow.")
+        print(f"\n⚠️  WARNING: Agent-mode with {format_number(config.initial_workers)} workers will be slow.")
         print("   Consider using --count-mode for large simulations.")
     
     # Green card conversion cap (FROM SPEC-2)
     cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
     annual_cap = round(config.initial_workers * cap_proportion)
-    print(f"\\nGreen card conversion system:")
+    print(f"\nGreen card conversion system:")
     print(f"  Annual conversions: {annual_cap} ({format_percentage(cap_proportion, 4)})")
     print(f"  Based on US cap: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)}")
     
     # NEW FOR SPEC-5: Per-country cap information
     if config.country_cap_enabled:
         per_country_cap = round(annual_cap * PER_COUNTRY_CAP_SHARE)
+        # FIXED: Use format_percentage instead of raw % signs
         print(f"  Per-country cap: ENABLED ({format_percentage(PER_COUNTRY_CAP_SHARE)})")
         print(f"  Max per country: {per_country_cap} conversions/year")
         print(f"  Queue mode: Separate nationality queues with FIFO within each")
@@ -185,14 +186,14 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     
     # FROM SPEC-3: Wage and job mobility parameters
     temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
-    print(f"\\nWage and job mobility parameters:")
+    print(f"\nWage and job mobility parameters:")
     print(f"  Starting wage: {format_currency(STARTING_WAGE)}")
     print(f"  Job change probability (permanent): {format_percentage(JOB_CHANGE_PROB_PERM)}")
     print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")
     print(f"  Average wage jump on job change: {format_percentage(WAGE_JUMP_FACTOR_MEAN - 1)}")
     
     # FROM SPEC-4: Nationality distribution
-    print(f"\\nNationality distribution:")
+    print(f"\nNationality distribution:")
     print(f"  Permanent workers: {PERMANENT_NATIONALITY}")
     if nationality_distribution:
         print("  Temporary worker nationalities (top 5):")
@@ -206,7 +207,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
             print(f"    {nationality}: {format_percentage(proportion)}")
     
     if live_data:
-        print("\\nUsing live-fetched data:")
+        print("\nUsing live-fetched data:")
         print(f"  H-1B share: {format_percentage(live_data.get('h1b_share', H1B_SHARE))}")
         print(f"  Annual H-1B entry rate: {format_percentage(live_data.get('annual_h1b_entry_rate', ANNUAL_H1B_ENTRY_RATE))}")
         if 'green_card_cap' in live_data:
@@ -216,7 +217,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
         if 'annual_job_mobility_rate' in live_data:
             print(f"  Job mobility rate: {format_percentage(live_data['annual_job_mobility_rate'])}")
     else:
-        print("\\nUsing default empirical parameters:")
+        print("\nUsing default empirical parameters:")
         print(f"  H-1B share: {format_percentage(H1B_SHARE)}")
         print(f"  Annual permanent entry rate: {format_percentage(ANNUAL_PERMANENT_ENTRY_RATE)}")
         print(f"  Annual H-1B entry rate: {format_percentage(ANNUAL_H1B_ENTRY_RATE)}")
