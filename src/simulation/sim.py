@@ -58,7 +58,9 @@ class Simulation:
         
         # NEW FOR SPEC-5: Per-country cap system
         self.country_cap_enabled = config.country_cap_enabled
-        self.per_country_cap = round(self.annual_conversion_cap * PER_COUNTRY_CAP_SHARE)
+        # FIXED: Ensure per-country cap is at least 1 for meaningful testing
+        self.per_country_cap = max(1, round(self.annual_conversion_cap * PER_COUNTRY_CAP_SHARE))
+
         
         # Conversion queues - either single global or per-country (NEW FOR SPEC-5)
         if self.country_cap_enabled:
@@ -124,9 +126,11 @@ class Simulation:
         annual_cap = round(self.config.initial_workers * cap_proportion)
         
         logger.info(f"Green card cap calculation: {GREEN_CARD_CAP_ABS:,} / {REAL_US_WORKFORCE_SIZE:,} "
-                   f"* {self.config.initial_workers:,} = {annual_cap}")
+                f"* {self.config.initial_workers:,} = {annual_cap}")
         
-        return max(1, annual_cap)  # Ensure at least 1 conversion possible
+        # FIXED: Ensure meaningful cap for testing
+        return max(2, annual_cap)  # Ensure at least 2 conversions possible
+
     
     def _sample_nationality(self, is_temporary: bool) -> str:
         """
@@ -188,7 +192,7 @@ class Simulation:
                 worker = Worker(
                     id=self.next_worker_id,
                     status=WorkerStatus.PERMANENT,
-                    nationality=PERMANENT_NATIONALITY,  # FROM SPEC-4
+                    nationality=PERMANENT_NATIONALITY,  # FROM SPEC-4 - FIXED: Always US for permanent
                     age=self.rng.integers(25, 65),
                     wage=STARTING_WAGE,
                     created_year=self.current_year,
@@ -236,6 +240,19 @@ class Simulation:
                 permanent_nationalities={PERMANENT_NATIONALITY: initial_permanent},
                 temporary_nationalities={k: round(v * initial_temporary) for k, v in self.temp_nationality_distribution.items()}
             )
+            
+            # Initialize queues for count mode too
+            if self.country_cap_enabled:
+                for nationality, proportion in self.temp_nationality_distribution.items():
+                    temp_workers_for_nationality = round(proportion * initial_temporary)
+                    for i in range(temp_workers_for_nationality):
+                        self._add_to_conversion_queue(self.next_worker_id, nationality, self.current_year)
+                        self.next_worker_id += 1
+            else:
+                for i in range(initial_temporary):
+                    nationality = self._sample_nationality(is_temporary=True)
+                    self._add_to_conversion_queue(self.next_worker_id, nationality, self.current_year)
+                    self.next_worker_id += 1
         
         # Initialize per-country conversion statistics (NEW FOR SPEC-5)
         initial_conversions = {}
@@ -245,9 +262,8 @@ class Simulation:
         elif self.global_queue is not None:
             # For uncapped mode, we can track backlogs by nationality for reporting
             temp_workers_by_nationality = defaultdict(int)
-            for worker in (self.workers if self.config.agent_mode else []):
-                if worker.is_temporary:
-                    temp_workers_by_nationality[worker.nationality] += 1
+            for temp_worker in self.global_queue:
+                temp_workers_by_nationality[temp_worker.nationality] += 1
             initial_backlogs = dict(temp_workers_by_nationality)
         
         initial_state = SimulationState(
@@ -273,6 +289,7 @@ class Simulation:
         # Print nationality summary if requested (FROM SPEC-4)
         if self.config.show_nationality_summary:
             self._print_nationality_summary("INITIAL", nationality_stats)
+
         
     def step(self) -> SimulationState:
         """

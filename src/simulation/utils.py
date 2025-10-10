@@ -133,7 +133,8 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
                         converted_by_country = json.loads(conversions_str)
                         # Convert string values back to integers
                         converted_by_country = {k: int(v) for k, v in converted_by_country.items()}
-                        country_cap_enabled = True
+                        if converted_by_country:  # Only set enabled if there's actually data
+                            country_cap_enabled = True
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse conversion data for year {row['year']}")
             
@@ -146,6 +147,10 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
                         queue_backlog_by_country = {k: int(v) for k, v in queue_backlog_by_country.items()}
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse backlog data for year {row['year']}")
+            
+            # FIXED: Determine country_cap_enabled based on presence of data in any state
+            if converted_by_country or queue_backlog_by_country:
+                country_cap_enabled = True
             
             state = SimulationState(
                 year=int(row['year']),

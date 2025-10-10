@@ -98,11 +98,18 @@ class TestUtils:
         errors = validate_configuration(config)
         assert len(errors) == 0
         
-        # Invalid configs
-        invalid_config = SimulationConfig(initial_workers=0, years=10)
-        errors = validate_configuration(invalid_config)
+        # Test that invalid configs raise ValueError during creation
+        with pytest.raises(ValueError, match="Initial workers must be positive"):
+            SimulationConfig(initial_workers=0, years=10)
+        
+        with pytest.raises(ValueError, match="Simulation years must be positive"):
+            SimulationConfig(initial_workers=1000, years=0)
+        
+        # Test validation function on edge cases
+        large_config = SimulationConfig(initial_workers=600000, years=10)
+        errors = validate_configuration(large_config)
         assert len(errors) > 0
-        assert any("positive" in error for error in errors)
+        assert any("slow" in error for error in errors)
         
         # Test excessive years
         long_config = SimulationConfig(initial_workers=1000, years=100)
@@ -115,6 +122,7 @@ class TestUtils:
         errors = validate_configuration(small_country_cap_config)
         assert len(errors) > 0
         assert any("discretization" in error for error in errors)
+
     
     def test_format_functions(self):
         """Test number and percentage formatting."""
