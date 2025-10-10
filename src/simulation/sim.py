@@ -2,7 +2,7 @@
 """
 Core simulation engine for workforce growth modeling.
 Handles worker dynamics, green card conversions, and wage tracking.
-CORRECTED FOR SPEC-8: Fixed annual conversions with proper invariants.
+CORRECTED FOR SPEC-8: Fixed per-country cap distribution to maintain invariants.
 """
 
 import logging
@@ -22,7 +22,7 @@ from .empirical_params import (
     WAGE_JUMP_FACTOR_MEAN_PERM, WAGE_JUMP_FACTOR_STD_PERM,
     WAGE_JUMP_FACTOR_MEAN_TEMP, WAGE_JUMP_FACTOR_STD_TEMP,
     TEMP_NATIONALITY_DISTRIBUTION, PERMANENT_NATIONALITY,
-    CARRYOVER_FRACTION_STRATEGY, calculate_annual_sim_cap, calculate_per_country_cap
+    CARRYOVER_FRACTION_STRATEGY, calculate_annual_sim_cap
 )
 
 logger = logging.getLogger(__name__)
@@ -30,13 +30,13 @@ logger = logging.getLogger(__name__)
 class Simulation:
     """
     Core simulation engine for workforce growth modeling.
-    CORRECTED FOR SPEC-8 with fixed annual conversions and proper invariants.
+    CORRECTED FOR SPEC-8 with proper per-country cap distribution.
     """
     
     def __init__(self, config: SimulationConfig):
         """
         Initialize simulation with configuration.
-        CORRECTED FOR SPEC-8: Fixed conversion cap calculation.
+        CORRECTED FOR SPEC-8: Fixed per-country cap distribution.
         
         Args:
             config: SimulationConfig object with simulation parameters
@@ -60,21 +60,54 @@ class Simulation:
         logger.info(f"Fixed annual conversion cap: {self.annual_sim_cap}")
         logger.info(f"Residual fraction: {self.residual_fraction:.6f}")
         
-        # CORRECTED FOR SPEC-8: Per-country cap system
+        # CORRECTED FOR SPEC-8: Per-country cap system with proper distribution
         self.country_cap_enabled = config.country_cap_enabled
         if self.country_cap_enabled:
-            self.per_country_cap, self.per_country_residual = calculate_per_country_cap(self.annual_sim_cap)
-            # Initialize per-country residuals
-            self.per_country_cumulative_residuals = {
-                nationality: self.per_country_residual 
-                for nationality in self.temp_nationality_distribution.keys()
-            }
-            logger.info(f"Per-country annual cap: {self.per_country_cap}")
-            logger.info(f"Per-country residual: {self.per_country_residual:.6f}")
+            # FIXED: Calculate per-country caps that sum to annual_sim_cap
+            base_per_country = max(1, math.floor(self.annual_sim_cap * PER_COUNTRY_CAP_SHARE))
+            num_countries = len(self.temp_nationality_distribution)
+            
+            # Ensure total doesn't exceed annual cap
+            total_distributed = base_per_country * num_countries
+            if total_distributed > self.annual_sim_cap:
+                # Reduce base per-country cap
+                base_per_country = max(1, self.annual_sim_cap // num_countries)
+                total_distributed = base_per_country * num_countries
+            
+            # Distribute any remaining slots to countries with highest backlog potential (India, China)
+            remaining_slots = self.annual_sim_cap - total_distributed
+            
+            # Create per-country caps
+            self.per_country_caps = {}
+            priority_countries = ["India", "China"]  # Countries likely to have high demand
+            
+            for nationality in self.temp_nationality_distribution.keys():
+                self.per_country_caps[nationality] = base_per_country
+                
+                # Distribute extra slots to priority countries
+                if remaining_slots > 0 and nationality in priority_countries:
+                    extra_slots = min(remaining_slots, base_per_country)
+                    self.per_country_caps[nationality] += extra_slots
+                    remaining_slots -= extra_slots
+            
+            # Distribute any remaining slots round-robin
+            countries_list = list(self.temp_nationality_distribution.keys())
+            country_idx = 0
+            while remaining_slots > 0:
+                self.per_country_caps[countries_list[country_idx]] += 1
+                remaining_slots -= 1
+                country_idx = (country_idx + 1) % len(countries_list)
+            
+            # Verify total
+            total_per_country_slots = sum(self.per_country_caps.values())
+            assert total_per_country_slots == self.annual_sim_cap, \
+                f"Per-country caps sum to {total_per_country_slots}, expected {self.annual_sim_cap}"
+            
+            logger.info(f"Per-country caps: {self.per_country_caps}")
+            logger.info(f"Total per-country slots: {total_per_country_slots}")
+            
         else:
-            self.per_country_cap = 0
-            self.per_country_residual = 0.0
-            self.per_country_cumulative_residuals = {}
+            self.per_country_caps = {}
         
         # CORRECTED FOR SPEC-8: Synchronized queue management
         # Always maintain both queue structures for consistency
@@ -406,7 +439,7 @@ class Simulation:
     def _process_green_card_conversions(self, current_year: int) -> Tuple[int, Dict[str, int]]:
         """
         Process temporary-to-permanent conversions with fixed caps.
-        CORRECTED FOR SPEC-8: Ensures invariants hold.
+        CORRECTED FOR SPEC-8: Proper per-country cap handling that maintains invariants.
         """
         # CORRECTED FOR SPEC-8: Calculate slots this year with carryover
         slots_this_year = self.annual_sim_cap
@@ -420,55 +453,76 @@ class Simulation:
             self.cumulative_residual += self.residual_fraction
         
         conversions_by_country = {}
+        total_conversions = 0
         
         if self.country_cap_enabled:
-            # Per-country capped conversions
-            total_conversions = 0
+            # CORRECTED: Per-country capped conversions with redistribution
             
+            # First pass: Use per-country caps
+            unused_slots = 0
             for nationality in self.temp_nationality_distribution.keys():
                 if nationality not in self.country_queues:
                     continue
                 
-                # Calculate per-country slots with carryover
-                per_country_slots = self.per_country_cap
-                if CARRYOVER_FRACTION_STRATEGY and self.per_country_cumulative_residuals[nationality] >= 1.0:
-                    extra_slots = int(self.per_country_cumulative_residuals[nationality])
-                    per_country_slots += extra_slots
-                    self.per_country_cumulative_residuals[nationality] -= extra_slots
-                
-                # Add residual for next year
-                if CARRYOVER_FRACTION_STRATEGY:
-                    self.per_country_cumulative_residuals[nationality] += self.per_country_residual
-                
                 queue = self.country_queues[nationality]
-                conversions_this_country = 0
+                per_country_cap = self.per_country_caps.get(nationality, 0)
                 
-                # Convert up to per-country limit
+                conversions_this_country = min(len(queue), per_country_cap)
+                
+                # Convert workers from this country
                 converted_ids = []
-                for _ in range(per_country_slots):
-                    if not queue:
-                        break
-                    
-                    temp_worker = queue.popleft()
-                    converted_ids.append(temp_worker.worker_id)
-                    
-                    # Find and convert the actual worker
-                    worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
-                    if worker and worker.is_temporary:
-                        worker.convert_to_permanent(current_year)
-                        conversions_this_country += 1
+                for _ in range(conversions_this_country):
+                    if queue:
+                        temp_worker = queue.popleft()
+                        converted_ids.append(temp_worker.worker_id)
+                        
+                        # Find and convert the actual worker
+                        worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
+                        if worker and worker.is_temporary:
+                            worker.convert_to_permanent(current_year)
                 
-                # CORRECTED FOR SPEC-8: Remove same workers from global queue to maintain synchronization
+                # Remove same workers from global queue to maintain synchronization
                 for worker_id in converted_ids:
-                    # Remove from global queue
                     self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id != worker_id])
                 
                 conversions_by_country[nationality] = conversions_this_country
                 total_conversions += conversions_this_country
+                
+                # Track unused slots for redistribution
+                unused_slots += per_country_cap - conversions_this_country
+            
+            # Second pass: Redistribute unused slots to countries with backlog
+            # This ensures we use all available slots up to annual_sim_cap
+            while unused_slots > 0 and total_conversions < slots_this_year:
+                redistributed = False
+                
+                for nationality in self.temp_nationality_distribution.keys():
+                    if unused_slots <= 0 or total_conversions >= slots_this_year:
+                        break
+                    
+                    queue = self.country_queues[nationality]
+                    if queue:  # Country has backlog
+                        # Convert one more worker from this country
+                        temp_worker = queue.popleft()
+                        
+                        # Find and convert the actual worker
+                        worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
+                        if worker and worker.is_temporary:
+                            worker.convert_to_permanent(current_year)
+                        
+                        # Remove from global queue
+                        self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id != temp_worker.worker_id])
+                        
+                        conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
+                        total_conversions += 1
+                        unused_slots -= 1
+                        redistributed = True
+                
+                if not redistributed:
+                    break  # No more backlogs to process
         
         else:
             # Global uncapped conversions (with fixed annual cap)
-            total_conversions = 0
             converted_ids = []
             
             # Process conversions from global queue
@@ -487,7 +541,7 @@ class Simulation:
                     conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
                     total_conversions += 1
             
-            # CORRECTED FOR SPEC-8: Remove same workers from country queues to maintain synchronization
+            # Remove same workers from country queues to maintain synchronization
             for worker_id in converted_ids:
                 for nationality, queue in self.country_queues.items():
                     self.country_queues[nationality] = deque([tw for tw in queue if tw.worker_id != worker_id])
@@ -636,6 +690,8 @@ class Simulation:
             logger.info(f"annual_sim_cap: {self.annual_sim_cap}")
             logger.info(f"residual_fraction: {self.residual_fraction:.6f}")
             logger.info(f"cumulative_residual: {self.cumulative_residual:.6f}")
+            if self.country_cap_enabled:
+                logger.info(f"per_country_caps: {self.per_country_caps}")
         
         logger.info(f"Starting {self.config.years}-year simulation...")
         
@@ -732,7 +788,7 @@ class Simulation:
         # Add per-country cap statistics if enabled
         if self.country_cap_enabled:
             stats.update({
-                'per_country_cap': self.per_country_cap,
+                'per_country_caps': self.per_country_caps,
                 'per_country_cap_rate': PER_COUNTRY_CAP_SHARE,
                 'final_queue_backlogs': final_state.queue_backlog_by_country,
                 'countries_with_backlogs': len([b for b in final_state.queue_backlog_by_country.values() if b > 0])
