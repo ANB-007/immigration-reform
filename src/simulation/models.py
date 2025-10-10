@@ -2,7 +2,7 @@
 """
 Data models for the workforce simulation.
 Defines Worker agents and related data structures.
-Updated for SPEC-5 to include per-country cap functionality.
+Updated for SPEC-7 to include backlog analysis functionality.
 """
 
 from dataclasses import dataclass, field
@@ -21,7 +21,7 @@ class WorkerStatus(Enum):
 class Worker:
     """
     Represents a single worker agent in the simulation.
-    Updated for SPEC-5 with per-country cap considerations.
+    Updated for SPEC-7 with backlog analysis considerations.
     
     Attributes:
         id: Unique identifier for the worker
@@ -122,7 +122,7 @@ class Worker:
 class SimulationState:
     """
     Represents the state of the simulation at a given time step.
-    Updated for SPEC-5 to include per-country cap statistics.
+    Updated for SPEC-7 to include backlog analysis statistics.
     
     Attributes:
         year: Current simulation year
@@ -137,9 +137,9 @@ class SimulationState:
         avg_wage_temporary: Average wage for temporary workers (FROM SPEC-3)
         total_wage_bill: Total wages paid to all workers (FROM SPEC-3)
         top_temp_nationalities: Top 3 nationalities for temporary workers (FROM SPEC-4)
-        converted_by_country: Conversions by nationality this year (NEW FOR SPEC-5)
-        queue_backlog_by_country: Queue backlogs by nationality (NEW FOR SPEC-5)
-        country_cap_enabled: Whether per-country cap is active (NEW FOR SPEC-5)
+        converted_by_country: Conversions by nationality this year (FROM SPEC-5)
+        queue_backlog_by_country: Queue backlogs by nationality (FROM SPEC-5)
+        country_cap_enabled: Whether per-country cap is active (FROM SPEC-5)
     """
     year: int
     total_workers: int
@@ -153,9 +153,9 @@ class SimulationState:
     avg_wage_temporary: float = 0.0  # FROM SPEC-3
     total_wage_bill: float = 0.0  # FROM SPEC-3
     top_temp_nationalities: Dict[str, float] = field(default_factory=dict)  # FROM SPEC-4
-    converted_by_country: Dict[str, int] = field(default_factory=dict)  # NEW FOR SPEC-5
-    queue_backlog_by_country: Dict[str, int] = field(default_factory=dict)  # NEW FOR SPEC-5
-    country_cap_enabled: bool = False  # NEW FOR SPEC-5
+    converted_by_country: Dict[str, int] = field(default_factory=dict)  # FROM SPEC-5
+    queue_backlog_by_country: Dict[str, int] = field(default_factory=dict)  # FROM SPEC-5
+    country_cap_enabled: bool = False  # FROM SPEC-5
     
     def __post_init__(self):
         """Validation of state consistency."""
@@ -172,7 +172,7 @@ class SimulationState:
                                    self.avg_wage_temporary, self.total_wage_bill]):
             raise ValueError("All wage statistics must be non-negative")
         
-        # Validate per-country statistics (NEW FOR SPEC-5)
+        # Validate per-country statistics (FROM SPEC-5)
         if any(count < 0 for count in self.converted_by_country.values()):
             raise ValueError("All conversion counts must be non-negative")
         
@@ -203,7 +203,8 @@ class SimulationConfig:
     output_path: str = "data/sample_output.csv"
     agent_mode: bool = True  # FROM SPEC-3: Default to agent-mode for wage tracking
     show_nationality_summary: bool = False  # FROM SPEC-4: Show nationality breakdown
-    country_cap_enabled: bool = False  # NEW FOR SPEC-5: Enable per-country cap
+    country_cap_enabled: bool = False  # FROM SPEC-5: Enable per-country cap
+    compare_backlogs: bool = False  # NEW FOR SPEC-7: Enable backlog comparison analysis
     
     def __post_init__(self):
         """Validation of configuration parameters."""
@@ -221,7 +222,7 @@ class TemporaryWorker:
     """
     worker_id: int
     year_joined: int
-    nationality: str = ""  # NEW FOR SPEC-5: Added for per-country queue management
+    nationality: str = ""  # FROM SPEC-5: Added for per-country queue management
     
     def __lt__(self, other):
         """Less than comparison for sorting (earlier year_joined comes first)."""
@@ -354,7 +355,7 @@ class NationalityStatistics:
 @dataclass
 class CountryCapStatistics:
     """
-    Container for per-country cap statistics (NEW FOR SPEC-5).
+    Container for per-country cap statistics (FROM SPEC-5).
     """
     total_conversions: int
     conversions_by_country: Dict[str, int]
@@ -422,3 +423,84 @@ class CountryCapStatistics:
             nationality for nationality, conversions in self.conversions_by_country.items()
             if conversions >= self.per_country_limit
         ]
+
+@dataclass
+class BacklogAnalysis:
+    """
+    Container for backlog analysis statistics (NEW FOR SPEC-7).
+    """
+    scenario: str  # "capped" or "uncapped"
+    backlog_by_nationality: Dict[str, int]
+    total_backlog: int
+    final_year: int
+    
+    @classmethod
+    def from_simulation(cls, sim, scenario: str) -> 'BacklogAnalysis':
+        """
+        Create BacklogAnalysis from a completed simulation.
+        
+        Args:
+            sim: Simulation object
+            scenario: Scenario name ("capped" or "uncapped")
+            
+        Returns:
+            BacklogAnalysis object
+        """
+        from .empirical_params import TEMP_NATIONALITY_DISTRIBUTION
+        
+        # Initialize all nationalities with zero backlog
+        backlog_by_nationality = {nationality: 0 for nationality in TEMP_NATIONALITY_DISTRIBUTION.keys()}
+        
+        # Get actual backlogs from simulation queues
+        if sim.country_cap_enabled and sim.country_queues:
+            # Capped mode: get from country-specific queues
+            for nationality, queue in sim.country_queues.items():
+                backlog_by_nationality[nationality] = len(queue)
+        elif sim.global_queue is not None:
+            # Uncapped mode: count by nationality in global queue
+            for temp_worker in sim.global_queue:
+                if temp_worker.nationality in backlog_by_nationality:
+                    backlog_by_nationality[temp_worker.nationality] += 1
+        
+        total_backlog = sum(backlog_by_nationality.values())
+        final_year = sim.states[-1].year if sim.states else 2025
+        
+        return cls(
+            scenario=scenario,
+            backlog_by_nationality=backlog_by_nationality,
+            total_backlog=total_backlog,
+            final_year=final_year
+        )
+    
+    def to_dataframe(self) -> 'pd.DataFrame':
+        """
+        Convert backlog analysis to pandas DataFrame for visualization.
+        
+        Returns:
+            DataFrame with nationality, backlog_size, and scenario columns
+        """
+        import pandas as pd
+        
+        data = []
+        for nationality, backlog_size in self.backlog_by_nationality.items():
+            data.append({
+                'nationality': nationality,
+                'backlog_size': backlog_size,
+                'scenario': self.scenario
+            })
+        
+        return pd.DataFrame(data)
+    
+    def get_top_backlogs(self, n: int = 5) -> Dict[str, int]:
+        """
+        Get top N nationalities by backlog size.
+        
+        Args:
+            n: Number of top nationalities to return
+            
+        Returns:
+            Dictionary with top N nationalities and their backlog sizes
+        """
+        sorted_backlogs = sorted(self.backlog_by_nationality.items(), 
+                               key=lambda x: x[1], reverse=True)
+        return dict(sorted_backlogs[:n])

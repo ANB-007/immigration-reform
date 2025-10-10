@@ -2,7 +2,7 @@
 """
 Visualization module for workforce growth simulation.
 Provides comparative analysis charts and interactive visualizations.
-NEW FOR SPEC-6: Enhanced visualization and comparative salary analysis.
+Updated for SPEC-7: Comparative backlog analysis by nationality.
 """
 
 import os
@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import warnings
-import math
+
 import pandas as pd
 import numpy as np
 
@@ -53,6 +53,7 @@ class SimulationVisualizer:
     """
     Visualization class for workforce simulation results.
     Provides methods for creating comparative charts and analysis plots.
+    Updated for SPEC-7 to include backlog analysis visualizations.
     """
     
     def __init__(self, output_dir: str = OUTPUT_DIR, save_plots: bool = SAVE_PLOTS):
@@ -300,6 +301,135 @@ class SimulationVisualizer:
         plt.show()
         return str(filename) if self.save_plots else ""
     
+    def compare_backlog_sizes(self, backlog_uncapped: pd.DataFrame, 
+                            backlog_capped: pd.DataFrame) -> str:
+        """
+        Create a bar chart comparing final-year backlogs by nationality (NEW FOR SPEC-7).
+        
+        Args:
+            backlog_uncapped: DataFrame with uncapped backlog data
+            backlog_capped: DataFrame with capped backlog data
+            
+        Returns:
+            Path to saved plot file
+        """
+        # Merge the data on nationality
+        merged = backlog_uncapped.merge(backlog_capped, on='nationality', suffixes=('_uncapped', '_capped'))
+        merged = merged.sort_values('backlog_size_capped', ascending=False)
+        
+        fig, ax = plt.subplots(figsize=(14, 8))
+        
+        # Create bar positions
+        x = np.arange(len(merged))
+        width = 0.35
+        
+        # Create bars
+        bars1 = ax.bar(x - width/2, merged['backlog_size_uncapped'], width, 
+                      label='No Per-Country Cap', color=COLORS['uncapped'], alpha=0.8)
+        bars2 = ax.bar(x + width/2, merged['backlog_size_capped'], width,
+                      label='7% Per-Country Cap', color=COLORS['capped'], alpha=0.8)
+        
+        # Add value labels on bars
+        def add_value_labels(bars):
+            for bar in bars:
+                height = bar.get_height()
+                if height > 0:  # Only add labels for non-zero bars
+                    ax.text(bar.get_x() + bar.get_width()/2., height,
+                           f'{int(height):,}', ha='center', va='bottom', 
+                           fontsize=9, fontweight='bold')
+        
+        add_value_labels(bars1)
+        add_value_labels(bars2)
+        
+        # Formatting
+        ax.set_title('Final-Year Green Card Backlog by Nationality', 
+                    fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('Nationality', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Backlog Size (# of Temporary Workers)', fontsize=12, fontweight='bold')
+        
+        # Format y-axis with commas
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda x, p: f'{x:,.0f}'))
+        
+        # Set x-axis labels
+        ax.set_xticks(x)
+        ax.set_xticklabels(merged['nationality'], rotation=45, ha='right')
+        
+        # Legend and grid
+        ax.legend(fontsize=11, frameon=True, fancybox=True, shadow=True)
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        plt.tight_layout()
+        
+        # Save plot
+        if self.save_plots:
+            filename = self.output_dir / "backlog_comparison.png"
+            plt.savefig(filename, dpi=PLOT_DPI, bbox_inches='tight')
+            logger.info(f"✅ Saved backlog comparison chart: {filename}")
+            
+        plt.show()
+        return str(filename) if self.save_plots else ""
+    
+    def backlog_bar_interactive(self, backlog_uncapped: pd.DataFrame, 
+                              backlog_capped: pd.DataFrame) -> str:
+        """
+        Create an interactive backlog comparison using Plotly (NEW FOR SPEC-7).
+        
+        Args:
+            backlog_uncapped: DataFrame with uncapped backlog data
+            backlog_capped: DataFrame with capped backlog data
+            
+        Returns:
+            Path to saved interactive chart file
+        """
+        if not PLOTLY_AVAILABLE:
+            logger.warning("Plotly not available. Cannot create interactive backlog chart.")
+            return ""
+        
+        # Combine data for plotting
+        df = pd.concat([
+            backlog_uncapped.assign(Scenario='No Per-Country Cap'), 
+            backlog_capped.assign(Scenario='7% Per-Country Cap')
+        ])
+        
+        # Sort by capped backlog size for consistent ordering
+        capped_order = backlog_capped.sort_values('backlog_size', ascending=False)['nationality'].tolist()
+        df['nationality'] = pd.Categorical(df['nationality'], categories=capped_order, ordered=True)
+        df = df.sort_values('nationality')
+        
+        # Create interactive bar chart
+        fig = px.bar(df, x='nationality', y='backlog_size', color='Scenario', 
+                    barmode='group',
+                    color_discrete_sequence=[COLORS['uncapped'], COLORS['capped']],
+                    title='Final-Year Backlog Comparison by Nationality',
+                    text='backlog_size')
+        
+        # Update text format
+        fig.update_traces(texttemplate='%{text:,}', textposition='outside')
+        
+        # Update layout
+        fig.update_layout(
+            xaxis_title='Nationality', 
+            yaxis_title='Backlog Size (# of Workers)',
+            legend_title='Scenario',
+            title_x=0.5,
+            font=dict(size=12),
+            height=700,
+            width=1000,
+            xaxis={'categoryorder': 'array', 'categoryarray': capped_order}
+        )
+        
+        # Format y-axis
+        fig.update_yaxis(tickformat=',.')
+        
+        # Save interactive chart
+        if self.save_plots:
+            filename = self.output_dir / "backlog_comparison.html"
+            fig.write_html(str(filename))
+            logger.info(f"✅ Saved interactive backlog chart: {filename}")
+            
+        fig.show()
+        return str(filename) if self.save_plots else ""
+    
     def create_summary_dashboard(self, results_uncapped: pd.DataFrame, 
                                results_capped: pd.DataFrame) -> str:
         """
@@ -436,10 +566,45 @@ class SimulationVisualizer:
             raise
         
         return generated_files
+    
+    def generate_backlog_visualizations(self, backlog_uncapped: pd.DataFrame, 
+                                      backlog_capped: pd.DataFrame) -> Dict[str, str]:
+        """
+        Generate backlog-specific visualizations (NEW FOR SPEC-7).
+        
+        Args:
+            backlog_uncapped: DataFrame with uncapped backlog data
+            backlog_capped: DataFrame with capped backlog data
+            
+        Returns:
+            Dictionary mapping visualization names to file paths
+        """
+        logger.info("📊 Generating backlog comparison visualizations...")
+        
+        generated_files = {}
+        
+        try:
+            # Generate backlog visualizations
+            generated_files['backlog_comparison'] = self.compare_backlog_sizes(
+                backlog_uncapped, backlog_capped)
+            
+            generated_files['backlog_interactive'] = self.backlog_bar_interactive(
+                backlog_uncapped, backlog_capped)
+            
+            # Filter out empty paths
+            generated_files = {k: v for k, v in generated_files.items() if v}
+            
+            logger.info(f"✅ Successfully generated {len(generated_files)} backlog visualizations")
+            
+        except Exception as e:
+            logger.error(f"Error generating backlog visualizations: {e}")
+            raise
+        
+        return generated_files
 
 def format_currency(value: float) -> str:
     """Format currency values for display."""
-    return f"${math.ceil(value):,.0f}"
+    return f"${value:,.0f}"
 
 def format_number(value: int) -> str:
     """Format large numbers with commas."""
@@ -467,6 +632,31 @@ def validate_dataframes(df1: pd.DataFrame, df2: pd.DataFrame) -> bool:
         missing_columns = set(required_columns) - set(df.columns)
         if missing_columns:
             logger.error(f"DataFrame missing required columns: {missing_columns}")
+            return False
+    
+    return True
+
+def validate_backlog_dataframes(df1: pd.DataFrame, df2: pd.DataFrame) -> bool:
+    """
+    Validate that backlog DataFrames have required columns for visualization (NEW FOR SPEC-7).
+    
+    Args:
+        df1: First backlog DataFrame to validate
+        df2: Second backlog DataFrame to validate
+        
+    Returns:
+        True if both DataFrames are valid
+    """
+    required_columns = ['nationality', 'backlog_size', 'scenario']
+    
+    for df in [df1, df2]:
+        if df.empty:
+            logger.error("Backlog DataFrame is empty")
+            return False
+            
+        missing_columns = set(required_columns) - set(df.columns)
+        if missing_columns:
+            logger.error(f"Backlog DataFrame missing required columns: {missing_columns}")
             return False
     
     return True
