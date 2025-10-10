@@ -474,35 +474,48 @@ def test_nationality_consistency():
     """Test that nationality assignments are consistent (FROM SPEC-4)."""
     config = SimulationConfig(initial_workers=1000, years=1, seed=42)
     sim = Simulation(config)
+    
+    # Get initial state before running simulation
+    initial_workers = sim.to_agent_model()
+    initial_permanent_ids = set(w.id for w in initial_workers if w.is_permanent)
+    
+    # Now run the simulation
     sim.run()
     
     workers = sim.to_agent_model()
     
-    # Check that INITIAL permanent workers are US nationals
-    permanent_workers = [w for w in workers if w.is_permanent]
-    initial_permanent_workers = [w for w in permanent_workers if w.created_year == 2025]
+    # Check that INITIAL permanent workers (by ID) are US nationals
+    initial_permanent_workers = [w for w in workers if w.id in initial_permanent_ids and w.is_permanent]
     
     for worker in initial_permanent_workers:
-        assert worker.nationality == PERMANENT_NATIONALITY
+        assert worker.nationality == PERMANENT_NATIONALITY, \
+            f"Initial permanent worker {worker.id} has nationality {worker.nationality}, expected {PERMANENT_NATIONALITY}"
     
-    # NEW permanent workers (not conversions) should also be US nationals  
-    new_permanent_workers = [w for w in permanent_workers 
-                           if w.created_year > 2025 and w.year_joined == w.created_year]
+    # Check that NEW permanent workers (created after 2025) are US nationals  
+    new_permanent_workers = [w for w in workers 
+                           if w.is_permanent and w.created_year > 2025]
     
     for worker in new_permanent_workers:
-        assert worker.nationality == PERMANENT_NATIONALITY
+        assert worker.nationality == PERMANENT_NATIONALITY, \
+            f"New permanent worker {worker.id} has nationality {worker.nationality}, expected {PERMANENT_NATIONALITY}"
     
     # Check that temporary workers have diverse nationalities
     temporary_workers = [w for w in workers if w.is_temporary]
     if temporary_workers:
         nationalities = set(w.nationality for w in temporary_workers)
-        assert len(nationalities) > 1  # Should have multiple nationalities
-        assert PERMANENT_NATIONALITY not in nationalities  # Temporary workers shouldn't be US nationals
+        assert len(nationalities) > 1, "Should have multiple nationalities among temporary workers"
+        assert PERMANENT_NATIONALITY not in nationalities, "Temporary workers shouldn't be US nationals"
     
-    # Converted workers (permanent but joined before created) can have non-US nationalities
-    converted_workers = [w for w in permanent_workers 
-                        if w.year_joined < w.created_year or (w.created_year == 2025 and w.year_joined == 2025)]
-    # This is expected behavior - converted workers retain their original nationality
+    # SPEC-4 behavior: Converted workers (temp->permanent) retain original nationality
+    # This is expected and correct behavior
+    converted_workers = [w for w in workers 
+                        if w.is_permanent and w.id not in initial_permanent_ids and w.created_year == 2025]
+    
+    # Converted workers can have non-US nationalities (this is correct per SPEC-4)
+    if converted_workers:
+        converted_nationalities = set(w.nationality for w in converted_workers)
+        # This should include non-US nationalities, which is expected behavior
+        print(f"Converted workers nationalities: {converted_nationalities}")  # For debugging
 
 
 def test_wage_mechanics():
