@@ -1,8 +1,8 @@
 # src/simulation/empirical_params.py
 """
 Single source-of-truth for all empirical parameters used in the workforce simulation.
+SPEC-10: Moved annual_conversion_cap calculation here as a static empirical constant.
 All real-world rates and proportions are defined here for easy modification.
-CORRECTED FOR SPEC-8: Fixed annual conversions and enhanced wage differentiation.
 
 Data sources (as of October 2025):
 - BLS Employment Situation Report August 2025
@@ -17,91 +17,100 @@ Data sources (as of October 2025):
 """
 
 import math
+from typing import Tuple, List
 
 # Technical requirements
 PYTHON_MIN_VERSION = "3.10"
 DEFAULT_SEED = 42
+DEFAULT_YEARS = 30
 
-# Industry configuration (FROM SPEC-3)
-INDUSTRY_NAME = "information_technology"  # Single industry for the simulation (string)
+# SPEC-10: Temporal configuration - no hardcoded years
+DEFAULT_SIMULATION_START_YEAR = 2025
+SIMULATION_TIMESTEP_YEARS = 1
 
-# Starting wages (FROM SPEC-3)
-STARTING_WAGE = 95000.0          # USD per year (float) - starting wage for all workers
+# Industry configuration
+INDUSTRY_NAME = "information_technology"
 
-# Job-change probabilities (CORRECTED FOR SPEC-8)
-# Interpreted as probability an individual changes jobs in a given year
-JOB_CHANGE_PROB_PERM = 0.12     # 12% of permanent workers change jobs each year (float) - CORRECTED
-TEMP_JOB_CHANGE_PENALTY = 0.20  # Temporary workers are 20% less likely to change jobs (Jennifer Hunt finding)
-# Derived: JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY) = 0.096
+# --- Green card cap and annual conversion calculation ---
+GREEN_CARD_CAP_ABS = 140_000               # real-world annual employment-based green cards
+REAL_US_WORKFORCE_SIZE = 167_000_000       # baseline for proportionalization
 
-# Wage jump when changing jobs (CORRECTED FOR SPEC-8 - ENHANCED DIFFERENTIATION)
-# Interpreted as multiplicative factor applied to wage when an agent changes job
-WAGE_JUMP_FACTOR_MEAN_PERM = 1.10    # Mean 10% wage boost for permanent workers (float) - CORRECTED
-WAGE_JUMP_FACTOR_STD_PERM = 0.03     # Standard deviation for permanent wage jump (float)
-WAGE_JUMP_FACTOR_MEAN_TEMP = 1.05    # Mean 5% wage boost for temporary workers (float) - CORRECTED
-WAGE_JUMP_FACTOR_STD_TEMP = 0.03     # Standard deviation for temporary wage jump (float)
+# SPEC-10: Annual conversion cap calculation function (moved from models)
+def calculate_annual_conversion_cap(initial_workers: int) -> int:
+    """
+    Calculate annual conversion cap based on empirical proportions.
+    SPEC-10: Centralized calculation for consistent use throughout simulation.
+    
+    Args:
+        initial_workers: Initial workforce size
+        
+    Returns:
+        Integer number of annual conversion slots
+    """
+    annual_float = initial_workers * (GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE)
+    return int(round(annual_float))
 
-# Nationality distributions (FROM SPEC-4)
-# Real-world shares based on USCIS H-1B data and DOL disclosure data (FY 2024 figures)
+# Flat annual conversions configuration
+ANNUAL_SLOTS_FLAT = True                  # Use consistent annual slots
+CARRYOVER_FRACTION_STRATEGY = False       # No fractional carryover
+
+# --- Wage & job-change parameters ---
+STARTING_WAGE = 95000.0
+
+# Job change probabilities (realistic but meaningful separation)
+JOB_CHANGE_PROB_PERM = 0.16               # 16% per year for permanent workers
+TEMP_JOB_CHANGE_PENALTY = 0.35            # 35% penalty for temporary workers
+JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 10.4%
+
+# Wage jump factors (realistic separation)
+WAGE_JUMP_FACTOR_MEAN_PERM = 1.12         # 12% jump for permanent workers
+WAGE_JUMP_FACTOR_STD_PERM = 0.03
+
+WAGE_JUMP_FACTOR_MEAN_TEMP = 1.05         # 5% jump for temporary workers
+WAGE_JUMP_FACTOR_STD_TEMP = 0.02
+
+# Conversion wage bump (immediate boost upon status change)
+CONVERSION_WAGE_BUMP = 1.08               # 8% immediate boost
+
+# H-1B workforce proportions
+H1B_SHARE = 0.0041                        # ~0.41% of workforce are H-1B holders
+PERMANENT_SHARE = 1 - H1B_SHARE          # Rest are permanent workers
+
+# Annual entry rates
+ANNUAL_PERMANENT_ENTRY_RATE = 0.0242     # Permanent workers entry rate
+ANNUAL_H1B_ENTRY_RATE = 0.0008          # H-1B entry rate
+
+# --- Nationality distribution for temporary workers (must sum to 1.0)
 TEMP_NATIONALITY_DISTRIBUTION = {
-    "India": 0.70,
-    "China": 0.10,
-    "Canada": 0.04,
+    "India": 0.62,
+    "China": 0.12,
+    "Canada": 0.06,
     "South Korea": 0.03,
-    "Philippines": 0.02,
+    "Philippines": 0.03,
     "United Kingdom": 0.02,
     "Mexico": 0.02,
     "Brazil": 0.01,
     "Germany": 0.01,
-    "Other": 0.05,
+    "Other": 0.08,
 }
-
-# Default nationality for permanent (domestic) workers (FROM SPEC-4)
 PERMANENT_NATIONALITY = "United States"
 
-# H-1B workforce proportions (based on current research)
-# Current estimates suggest ~583,420 H-1B holders in 2019 (latest official count)
-# With labor force of ~167 million in 2025, this gives us roughly 0.35%
-H1B_SHARE = 0.0041                # ~0.41% of workforce are H-1B holders (conservative estimate)
-PERMANENT_SHARE = 1 - H1B_SHARE   # Rest are permanent workers
+# --- Per-country cap share ---
+PER_COUNTRY_CAP_SHARE = 0.07
+ENABLE_COUNTRY_CAP_DEFAULT = False
 
-# Annual entry rates (expressed as fractions of current total workforce)
-# Based on BLS projections of 0.5% annual labor force growth
-# New H-1B approvals: ~141,181 in FY 2024 out of ~167M workforce = ~0.0008
-ANNUAL_PERMANENT_ENTRY_RATE = 0.0242   # Permanent workers entry rate (total growth minus H-1B)
-ANNUAL_H1B_ENTRY_RATE = 0.0008         # H-1B entry rate based on 2024 approvals
+# Visualization options
+ENABLE_VISUALIZATION = True
+SAVE_PLOTS = True
+OUTPUT_DIR = "output/"
+PLOT_DPI = 300
+PLOT_STYLE = "whitegrid"
+PLOT_PALETTE = "muted"
 
-# Green card transition parameters (CORRECTED FOR SPEC-8)
-GREEN_CARD_CAP_ABS = 140_000           # Real-world annual employment-based green card cap
-REAL_US_WORKFORCE_SIZE = 167_000_000   # Current US workforce size (August 2025)
-
-# Per-country cap parameters (FROM SPEC-5)
-# Based on INA Section 203(b) - Immigration and Nationality Act per-country limitation
-PER_COUNTRY_CAP_SHARE = 0.07           # 7% per-country limit on employment-based green cards
-
-# CORRECTED FOR SPEC-8: Fixed annual conversion parameters
-CARRYOVER_FRACTION_STRATEGY = False     # Accumulate residual and grant extra when >=1
-ENABLE_COUNTRY_CAP = False             # Toggle for per-country cap (can be overridden by CLI)
-
-# Visualization options (FROM SPEC-6)
-ENABLE_VISUALIZATION = True            # Default visualization toggle
-SAVE_PLOTS = True                      # Whether to save plots automatically
-OUTPUT_DIR = "output/"                 # Directory to store charts and figures
-PLOT_DPI = 300                         # DPI for saved plots
-PLOT_STYLE = "whitegrid"               # Seaborn style
-PLOT_PALETTE = "muted"                 # Seaborn color palette
-
-# FROM SPEC-8: Dashboard parameters
-DASHBOARD_HOST = "127.0.0.1"          # Dashboard host address
-DASHBOARD_PORT = 8050                  # Dashboard port
-DASHBOARD_DEBUG = False                # Dashboard debug mode
-
-# Simulation configuration
-DEFAULT_YEARS = 30
-TIMESTEP_YEARS = 1
-
-# CORRECTED FOR SPEC-8: Derived parameters for clarity
-JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 0.096
+# Dashboard parameters
+DASHBOARD_HOST = "127.0.0.1"
+DASHBOARD_PORT = 8050
+DASHBOARD_DEBUG = False
 
 # Data sources and timestamps
 DATA_SOURCES = {
@@ -120,77 +129,60 @@ DATA_SOURCES = {
     "wage_data": "BLS Occupational Employment Statistics IT sector 2024"
 }
 
-# Validation ranges (for testing)
+# Validation ranges
 VALID_RANGES = {
-    "h1b_share": (0.002, 0.008),       # 0.2% to 0.8% of workforce
-    "annual_growth": (0.001, 0.05),    # 0.1% to 5% annual growth
-    "simulation_years": (1, 50),       # 1 to 50 years max
-    "green_card_proportion": (0.0001, 0.01),  # Green card cap proportion range
-    "starting_wage": (50000, 200000),  # Reasonable wage range for IT sector
-    "job_change_prob": (0.01, 0.30),   # 1% to 30% annual job change probability
-    "wage_jump_factor": (1.01, 1.25),  # 1% to 25% wage jump on job change
-    "nationality_distribution_sum": (0.999, 1.001),  # Distribution must sum to ~1.0
-    "per_country_cap_share": (0.01, 0.20)  # Per-country cap between 1% and 20%
+    "h1b_share": (0.002, 0.008),
+    "annual_growth": (0.001, 0.05),
+    "simulation_years": (1, 50),
+    "green_card_proportion": (0.0001, 0.01),
+    "starting_wage": (50000, 200000),
+    "job_change_prob": (0.01, 0.30),
+    "wage_jump_factor": (1.01, 1.25),
+    "nationality_distribution_sum": (0.999, 1.001),
+    "per_country_cap_share": (0.01, 0.20)
 }
 
-# Validation function for nationality distribution (FROM SPEC-4)
-def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-6) -> bool:
+# Helper functions
+def calculate_per_country_caps_deterministic(annual_slots: int, nationalities: List[str]) -> dict:
     """
-    Validate that nationality distribution sums to 1.0 within tolerance.
+    Calculate per-country caps with deterministic leftover distribution.
     
     Args:
-        distribution: Dictionary mapping nationality to proportion
-        tolerance: Acceptable deviation from 1.0
+        annual_slots: Total slots available
+        nationalities: List of nationality names
         
     Returns:
-        True if distribution is valid
+        Dictionary mapping nationality to allocated slots
     """
+    per_country_base = {n: math.floor(annual_slots * PER_COUNTRY_CAP_SHARE) for n in nationalities}
+    allocated = sum(per_country_base.values())
+    leftover = annual_slots - allocated
+    
+    # Distribute leftover deterministically by alphabetical order
+    sorted_nationalities = sorted(nationalities)
+    i = 0
+    while leftover > 0:
+        nationality = sorted_nationalities[i % len(sorted_nationalities)]
+        per_country_base[nationality] += 1
+        leftover -= 1
+        i += 1
+    
+    return per_country_base
+
+def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-6) -> bool:
+    """Validate that nationality distribution sums to 1.0 within tolerance."""
     total = sum(distribution.values())
     return abs(total - 1.0) <= tolerance
 
-# Validation for per-country cap parameters (FROM SPEC-5)
-if not (0.01 <= PER_COUNTRY_CAP_SHARE <= 0.20):
-    raise ValueError(f"PER_COUNTRY_CAP_SHARE must be between 1% and 20%, got {PER_COUNTRY_CAP_SHARE}")
-
-# CORRECTED FOR SPEC-8: Validation for wage parameters
-if WAGE_JUMP_FACTOR_MEAN_PERM <= WAGE_JUMP_FACTOR_MEAN_TEMP:
-    raise ValueError(f"Permanent wage jump mean ({WAGE_JUMP_FACTOR_MEAN_PERM}) must be greater than temporary ({WAGE_JUMP_FACTOR_MEAN_TEMP})")
-
-if JOB_CHANGE_PROB_PERM <= JOB_CHANGE_PROB_TEMP:
-    raise ValueError(f"Permanent job change probability ({JOB_CHANGE_PROB_PERM}) must be greater than temporary ({JOB_CHANGE_PROB_TEMP})")
-
-# Validate the default distribution
+# Validation
 if not validate_nationality_distribution(TEMP_NATIONALITY_DISTRIBUTION):
     raise ValueError(f"TEMP_NATIONALITY_DISTRIBUTION does not sum to 1.0: {sum(TEMP_NATIONALITY_DISTRIBUTION.values())}")
 
-# CORRECTED FOR SPEC-8: Helper functions for fixed conversion calculations
-def calculate_annual_sim_cap(initial_workers: int) -> tuple[int, float]:
-    """
-    Calculate fixed annual simulation cap and residual fraction.
-    
-    Args:
-        initial_workers: Initial workforce size
-        
-    Returns:
-        Tuple of (annual_sim_cap, residual_fraction)
-    """
-    cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
-    annual_sim_cap = math.floor(initial_workers * cap_proportion)
-    residual_fraction = (initial_workers * cap_proportion) - annual_sim_cap
-    
-    return annual_sim_cap, residual_fraction
+if not (0.01 <= PER_COUNTRY_CAP_SHARE <= 0.20):
+    raise ValueError(f"PER_COUNTRY_CAP_SHARE must be between 1% and 20%, got {PER_COUNTRY_CAP_SHARE}")
 
-def calculate_per_country_cap(annual_sim_cap: int) -> tuple[int, float]:
-    """
-    Calculate per-country cap and residual fraction.
-    
-    Args:
-        annual_sim_cap: Annual simulation conversion cap
-        
-    Returns:
-        Tuple of (per_country_cap, residual_fraction)
-    """
-    per_country_cap = math.floor(annual_sim_cap * PER_COUNTRY_CAP_SHARE)
-    residual_fraction = (annual_sim_cap * PER_COUNTRY_CAP_SHARE) - per_country_cap
-    
-    return per_country_cap, residual_fraction
+if WAGE_JUMP_FACTOR_MEAN_PERM <= WAGE_JUMP_FACTOR_MEAN_TEMP:
+    raise ValueError(f"Permanent wage jump mean must be greater than temporary")
+
+if JOB_CHANGE_PROB_PERM <= JOB_CHANGE_PROB_TEMP:
+    raise ValueError(f"Permanent job change probability must be greater than temporary")
