@@ -2,7 +2,7 @@
 """
 Command-line interface for the workforce growth simulation.
 Provides a user-friendly way to run simulations with various parameters.
-Updated for SPEC-5 per-country cap functionality.
+Updated for SPEC-6 visualization functionality.
 """
 
 import sys
@@ -10,6 +10,7 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Optional
+import pandas as pd
 
 from .models import SimulationConfig
 from .sim import Simulation
@@ -24,13 +25,22 @@ from .empirical_params import (
     PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE,
     STARTING_WAGE, JOB_CHANGE_PROB_PERM, TEMP_JOB_CHANGE_PENALTY,
     WAGE_JUMP_FACTOR_MEAN, INDUSTRY_NAME, TEMP_NATIONALITY_DISTRIBUTION,
-    PERMANENT_NATIONALITY, PER_COUNTRY_CAP_SHARE, ENABLE_COUNTRY_CAP
+    PERMANENT_NATIONALITY, PER_COUNTRY_CAP_SHARE, ENABLE_COUNTRY_CAP,
+    OUTPUT_DIR, ENABLE_VISUALIZATION
 )
+
+# NEW FOR SPEC-6: Import visualization module
+try:
+    from .visualization import SimulationVisualizer, validate_dataframes
+    VISUALIZATION_AVAILABLE = True
+except ImportError as e:
+    VISUALIZATION_AVAILABLE = False
+    print(f"Warning: Visualization module not available: {e}")
 
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, nationality segmentation, and per-country caps",
+        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, nationality segmentation, per-country caps, and visualization",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -40,7 +50,7 @@ Examples:
   python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
   python -m src.simulation.cli --initial-workers 10000 --show-nationality-summary  # Show nationality breakdown
   python -m src.simulation.cli --initial-workers 10000 --country-cap  # Enable 7%% per-country cap
-  python -m src.simulation.cli --initial-workers 10000 --no-country-cap  # Disable cap (default)
+  python -m src.simulation.cli --initial-workers 10000 --visualize-results  # Generate comparison charts
         """
     )
     
@@ -102,18 +112,37 @@ Examples:
         help="Export detailed nationality report to specified CSV file (agent-mode only)"
     )
     
-    # NEW FOR SPEC-5: Per-country cap options
+    # FROM SPEC-5: Per-country cap options
     cap_group = parser.add_mutually_exclusive_group()
     cap_group.add_argument(
         "--country-cap",
         action="store_true",
-        help="Enable 7%% per-country limit on employment-based green cards"  # FIXED: Escaped %
+        help="Enable 7%% per-country limit on employment-based green cards"
     )
     cap_group.add_argument(
         "--no-country-cap",
         action="store_true", 
         default=True,
         help="Disable per-country cap (default - use global FIFO queue)"
+    )
+    
+    # NEW FOR SPEC-6: Visualization options
+    parser.add_argument(
+        "--visualize-results",
+        action="store_true",
+        help="Generate wage and workforce comparison charts (runs both capped and uncapped scenarios)"
+    )
+    
+    parser.add_argument(
+        "--output-dir",
+        default=OUTPUT_DIR,
+        help=f"Directory for visualization outputs (default: {OUTPUT_DIR})"
+    )
+    
+    parser.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="Generate data but skip displaying plots (useful for batch processing)"
     )
     
     parser.add_argument(
@@ -145,11 +174,63 @@ def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
+def run_simulation_scenario(config: SimulationConfig, scenario_name: str, 
+                          live_data: Optional[dict] = None,
+                          updated_nationality_distribution: Optional[dict] = None,
+                          quiet: bool = False) -> pd.DataFrame:
+    """
+    Run a single simulation scenario and return results as DataFrame.
+    
+    Args:
+        config: SimulationConfig for the scenario
+        scenario_name: Name of the scenario (for logging)
+        live_data: Optional live data dictionary
+        updated_nationality_distribution: Optional updated nationality distribution
+        quiet: Whether to suppress output
+        
+    Returns:
+        DataFrame with simulation results
+    """
+    if not quiet:
+        cap_status = "WITH" if config.country_cap_enabled else "WITHOUT"
+        print(f"\n🔬 Running simulation {scenario_name} ({cap_status} per-country cap)...")
+    
+    # Run simulation
+    simulation = Simulation(config)
+    
+    # Update nationality distribution if live data was fetched
+    if updated_nationality_distribution:
+        simulation.temp_nationality_distribution = updated_nationality_distribution
+        simulation._validate_nationality_distribution()
+    
+    states = simulation.run()
+    
+    # Save results to temporary CSV for visualization
+    temp_output_path = f"temp_{scenario_name.lower().replace(' ', '_')}_results.csv"
+    save_simulation_results(states, temp_output_path, include_nationality_columns=True)
+    
+    # Load as DataFrame
+    results_df = pd.read_csv(temp_output_path)
+    
+    # Clean up temporary file
+    import os
+    try:
+        os.remove(temp_output_path)
+    except OSError:
+        pass
+    
+    if not quiet:
+        final_state = states[-1]
+        print(f"✅ Completed {scenario_name}: {final_state.total_workers:,} workers, "
+              f"${final_state.avg_wage_total:,.0f} avg wage")
+    
+    return results_df
+
 def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None,
                           nationality_distribution: Optional[dict] = None) -> None:
     """
     Print simulation header with parameters.
-    Updated for SPEC-5 to show per-country cap information.
+    Updated for SPEC-6 to show visualization information.
     """
     print("\n" + "="*60)
     print("WORKFORCE GROWTH SIMULATION")
@@ -173,10 +254,9 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     print(f"  Annual conversions: {annual_cap} ({format_percentage(cap_proportion, 4)})")
     print(f"  Based on US cap: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)}")
     
-    # NEW FOR SPEC-5: Per-country cap information
+    # FROM SPEC-5: Per-country cap information
     if config.country_cap_enabled:
         per_country_cap = round(annual_cap * PER_COUNTRY_CAP_SHARE)
-        # FIXED: Use format_percentage instead of raw % signs
         print(f"  Per-country cap: ENABLED ({format_percentage(PER_COUNTRY_CAP_SHARE)})")
         print(f"  Max per country: {per_country_cap} conversions/year")
         print(f"  Queue mode: Separate nationality queues with FIFO within each")
@@ -227,7 +307,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
 def print_simulation_results(simulation: Simulation) -> None:
     """
     Print summary of simulation results.
-    Updated for SPEC-5 to show per-country cap results.
+    Updated for SPEC-6.
     """
     stats = simulation.get_summary_stats()
     
@@ -256,7 +336,7 @@ def print_simulation_results(simulation: Simulation) -> None:
     print(f"  Annual conversion cap: {format_number(stats['annual_conversion_cap'])}")
     print(f"  Cap utilization: {format_percentage(stats['conversion_utilization'])}")
     
-    # NEW FOR SPEC-5: Per-country cap results
+    # FROM SPEC-5: Per-country cap results
     if stats.get('country_cap_enabled'):
         print(f"\nPer-country cap results:")
         per_country_cap = stats.get('per_country_cap', 0)
@@ -330,8 +410,7 @@ def main() -> int:
             print(f"Error: Python {required_version}+ required, found {python_version}")
             return 1
         
-        # Determine country cap setting (NEW FOR SPEC-5)
-        # CLI flag overrides default parameter
+        # Determine country cap setting (FROM SPEC-5)
         if args.country_cap:
             country_cap_enabled = True
         elif args.no_country_cap:
@@ -339,20 +418,26 @@ def main() -> int:
         else:
             country_cap_enabled = ENABLE_COUNTRY_CAP
         
-        # Create configuration
-        config = SimulationConfig(
+        # NEW FOR SPEC-6: Check visualization requirements
+        if args.visualize_results and not VISUALIZATION_AVAILABLE:
+            print("Error: Visualization libraries not available. Install with:")
+            print("pip install matplotlib seaborn plotly pandas")
+            return 1
+        
+        # Create base configuration
+        base_config = SimulationConfig(
             initial_workers=args.initial_workers,
             years=args.years,
             seed=args.seed,
             live_fetch=args.live_fetch,
             output_path=args.output,
-            agent_mode=not args.count_mode,  # Default to agent-mode unless count-mode specified
+            agent_mode=not args.count_mode,
             show_nationality_summary=args.show_nationality_summary,
-            country_cap_enabled=country_cap_enabled  # NEW FOR SPEC-5
+            country_cap_enabled=country_cap_enabled
         )
         
         # Validate configuration
-        errors = validate_configuration(config)
+        errors = validate_configuration(base_config)
         if errors:
             print("Configuration errors:")
             for error in errors:
@@ -362,7 +447,7 @@ def main() -> int:
         # Fetch live data if requested
         live_data = None
         updated_nationality_distribution = None
-        if config.live_fetch:
+        if base_config.live_fetch:
             if not args.quiet:
                 print("Fetching live workforce, wage, and nationality data...")
             live_data = fetch_live_data()
@@ -380,75 +465,160 @@ def main() -> int:
             else:
                 print("Warning: Failed to fetch live data, using defaults")
         
-        # Print header (unless quiet mode)
-        if not args.quiet:
-            print_simulation_header(config, live_data, updated_nationality_distribution)
+        # NEW FOR SPEC-6: Handle visualization mode
+        if args.visualize_results:
+            # Print header once
+            if not args.quiet:
+                print_simulation_header(base_config, live_data, updated_nationality_distribution)
+                print("\n🎨 VISUALIZATION MODE: Running both scenarios for comparison...")
+            
+            # Run uncapped scenario
+            uncapped_config = SimulationConfig(
+                initial_workers=args.initial_workers,
+                years=args.years,
+                seed=args.seed,
+                live_fetch=False,  # Don't fetch twice
+                output_path=f"{args.output_dir}/uncapped_results.csv",
+                agent_mode=not args.count_mode,
+                show_nationality_summary=False,  # Suppress for cleaner output
+                country_cap_enabled=False
+            )
+            
+            results_uncapped = run_simulation_scenario(
+                uncapped_config, "Uncapped", live_data, 
+                updated_nationality_distribution, args.quiet
+            )
+            
+            # Run capped scenario
+            capped_config = SimulationConfig(
+                initial_workers=args.initial_workers,
+                years=args.years,
+                seed=args.seed,
+                live_fetch=False,  # Don't fetch twice
+                output_path=f"{args.output_dir}/capped_results.csv",
+                agent_mode=not args.count_mode,
+                show_nationality_summary=False,  # Suppress for cleaner output
+                country_cap_enabled=True
+            )
+            
+            results_capped = run_simulation_scenario(
+                capped_config, "Capped", live_data, 
+                updated_nationality_distribution, args.quiet
+            )
+            
+            # Generate visualizations
+            if not args.quiet:
+                print("\n📊 Generating comparative visualizations...")
+            
+            # Validate data for visualization
+            if not validate_dataframes(results_uncapped, results_capped):
+                print("Error: Invalid data for visualization")
+                return 1
+            
+            # Create visualizer and generate charts
+            visualizer = SimulationVisualizer(
+                output_dir=args.output_dir,
+                save_plots=not args.skip_plots
+            )
+            
+            generated_files = visualizer.generate_all_visualizations(
+                results_uncapped, results_capped
+            )
+            
+            # Print results
+            if not args.quiet:
+                print("\n✅ Visualization complete!")
+                print("Generated files:")
+                for viz_name, filepath in generated_files.items():
+                    if filepath:
+                        print(f"  📈 {viz_name}: {filepath}")
+                
+                print(f"\nComparative Analysis Summary:")
+                final_wage_uncapped = results_uncapped.iloc[-1]['avg_wage_total']
+                final_wage_capped = results_capped.iloc[-1]['avg_wage_total']
+                wage_difference = final_wage_uncapped - final_wage_capped
+                wage_difference_pct = (wage_difference / final_wage_capped) * 100
+                
+                print(f"  Final average wage (no cap): {format_currency(final_wage_uncapped)}")
+                print(f"  Final average wage (7% cap): {format_currency(final_wage_capped)}")
+                print(f"  Difference: {format_currency(wage_difference)} ({wage_difference_pct:+.1f}%)")
         
-        # Run simulation
-        simulation = Simulation(config)
-        
-        # Update nationality distribution in simulation if live data was fetched
-        if updated_nationality_distribution:
-            simulation.temp_nationality_distribution = updated_nationality_distribution
-            simulation._validate_nationality_distribution()
-        
-        states = simulation.run()
-        
-        # Save results (NEW FOR SPEC-5: always include nationality columns, now includes per-country data)
-        save_simulation_results(states, config.output_path, include_nationality_columns=True)
-        
-        # Export nationality report if requested (FROM SPEC-4)
-        if args.export_nationality_report:
-            if config.agent_mode:
-                workers = simulation.to_agent_model()
-                export_nationality_report(workers, args.export_nationality_report)
-                if not args.quiet:
-                    print(f"Nationality report exported to: {args.export_nationality_report}")
-            else:
-                print("Warning: Nationality report export requires agent-mode")
-        
-        # Print results (unless quiet mode)
-        if not args.quiet:
-            print_simulation_results(simulation)
-            print_data_sources(live_data)
+        else:
+            # Standard single-scenario mode
+            # Print header (unless quiet mode)
+            if not args.quiet:
+                print_simulation_header(base_config, live_data, updated_nationality_distribution)
+            
+            # Run simulation
+            simulation = Simulation(base_config)
+            
+            # Update nationality distribution in simulation if live data was fetched
+            if updated_nationality_distribution:
+                simulation.temp_nationality_distribution = updated_nationality_distribution
+                simulation._validate_nationality_distribution()
+            
+            states = simulation.run()
+            
+            # Save results
+            save_simulation_results(states, base_config.output_path, include_nationality_columns=True)
+            
+            # Export nationality report if requested (FROM SPEC-4)
+            if args.export_nationality_report:
+                if base_config.agent_mode:
+                    workers = simulation.to_agent_model()
+                    export_nationality_report(workers, args.export_nationality_report)
+                    if not args.quiet:
+                        print(f"Nationality report exported to: {args.export_nationality_report}")
+                else:
+                    print("Warning: Nationality report export requires agent-mode")
+            
+            # Print results (unless quiet mode)
+            if not args.quiet:
+                print_simulation_results(simulation)
+                print_data_sources(live_data)
         
         # Validation checks
-        if not simulation.validate_proportional_growth():
-            logger.warning("Proportional growth validation failed - check parameters")
-        
-        if not simulation.validate_conversion_consistency():
-            logger.warning("Conversion consistency validation failed - check implementation")
-        
-        # FROM SPEC-3: Validate wage consistency
-        if not simulation.validate_wage_consistency():
-            logger.warning("Wage consistency validation failed - check wage calculations")
-        
-        # FROM SPEC-4: Validate nationality consistency
-        if not simulation.validate_nationality_consistency():
-            logger.warning("Nationality consistency validation failed - check nationality logic")
-        
-        # NEW FOR SPEC-5: Validate country cap consistency
-        if not simulation.validate_country_cap_consistency():
-            logger.warning("Country cap consistency validation failed - check per-country cap logic")
+        if not args.quiet and not args.visualize_results:
+            # Only run validation for single scenario mode
+            simulation = Simulation(base_config)  # Re-create for validation
+            
+            if not simulation.validate_proportional_growth():
+                logger.warning("Proportional growth validation failed - check parameters")
+            
+            if not simulation.validate_conversion_consistency():
+                logger.warning("Conversion consistency validation failed - check implementation")
+            
+            # FROM SPEC-3: Validate wage consistency
+            if not simulation.validate_wage_consistency():
+                logger.warning("Wage consistency validation failed - check wage calculations")
+            
+            # FROM SPEC-4: Validate nationality consistency
+            if not simulation.validate_nationality_consistency():
+                logger.warning("Nationality consistency validation failed - check nationality logic")
+            
+            # FROM SPEC-5: Validate country cap consistency
+            if not simulation.validate_country_cap_consistency():
+                logger.warning("Country cap consistency validation failed - check per-country cap logic")
         
         if not args.quiet:
-            print(f"\\nSimulation completed successfully!")
-            print(f"Results saved to: {config.output_path}")
-            print(f"\\nNext steps:")
+            print(f"\n✅ Simulation completed successfully!")
+            if not args.visualize_results:
+                print(f"Results saved to: {base_config.output_path}")
+            print(f"\nNext steps:")
             print(f"  • Analyze wage growth patterns by nationality in the output CSV")
             print(f"  • Compare permanent vs temporary worker wage trajectories by nationality") 
             print(f"  • Examine the impact of green card conversions on nationality composition")
-            if config.country_cap_enabled:
+            if base_config.country_cap_enabled and not args.visualize_results:
                 print(f"  • Analyze per-country conversion patterns and queue backlogs")
-                print(f"  • Compare results with --no-country-cap to see impact of 7% rule")
-            else:
-                print(f"  • Try running with --country-cap to see impact of 7% per-country limit")
+                print(f"  • Try running with --visualize-results to compare scenarios visually")
+            elif not base_config.country_cap_enabled and not args.visualize_results:
+                print(f"  • Try running with --country-cap --visualize-results to see impact of 7% rule")
             print(f"  • Use --export-nationality-report for detailed nationality analysis")
         
         return 0
         
     except KeyboardInterrupt:
-        print("\\nSimulation interrupted by user")
+        print("\nSimulation interrupted by user")
         return 1
     except Exception as e:
         logger.error(f"Simulation failed: {e}")

@@ -71,10 +71,18 @@ ANNUAL_H1B_ENTRY_RATE = 0.0008         # H-1B entry rate based on 2024 approvals
 GREEN_CARD_CAP_ABS = 140_000           # Real-world annual employment-based green card cap
 REAL_US_WORKFORCE_SIZE = 171_000_000   # Current US workforce size (August 2025)
 
-# Per-country cap parameters (NEW FOR SPEC-5)
+# Per-country cap parameters (FROM SPEC-5)
 # Based on INA Section 203(b) - Immigration and Nationality Act per-country limitation
 PER_COUNTRY_CAP_SHARE = 0.07           # 7% per-country limit on employment-based green cards
 ENABLE_COUNTRY_CAP = False             # Toggle for per-country cap (can be overridden by CLI)
+
+# Visualization options (NEW FOR SPEC-6)
+ENABLE_VISUALIZATION = True            # Default visualization toggle
+SAVE_PLOTS = True                      # Whether to save plots automatically
+OUTPUT_DIR = "output/"                 # Directory to store charts and figures
+PLOT_DPI = 300                         # DPI for saved plots
+PLOT_STYLE = "whitegrid"               # Seaborn style
+PLOT_PALETTE = "muted"                 # Seaborn color palette
 
 # Simulation configuration
 DEFAULT_YEARS = 30
@@ -129,6 +137,6 @@ def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-
 if not validate_nationality_distribution(TEMP_NATIONALITY_DISTRIBUTION):
     raise ValueError(f"TEMP_NATIONALITY_DISTRIBUTION does not sum to 1.0: {sum(TEMP_NATIONALITY_DISTRIBUTION.values())}")
 
-# Validation for per-country cap parameters (NEW FOR SPEC-5)
+# Validation for per-country cap parameters (FROM SPEC-5)
 if not (0.01 <= PER_COUNTRY_CAP_SHARE <= 0.20):
     raise ValueError(f"PER_COUNTRY_CAP_SHARE must be between 1% and 20%, got {PER_COUNTRY_CAP_SHARE}")

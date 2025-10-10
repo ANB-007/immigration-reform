@@ -1,34 +1,72 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.env
-.venv/
-.env/
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-
-# Data (optional - exclude generated simulation outputs)
-# Uncomment the following line if you don't want to commit simulation outputs:
-# data/*.csv
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Build artifacts
+*.py[cod]
+*$py.class
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
 # Virtual environments
 venv/
 env/
 ENV/
+.venv/
+.env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Data and outputs
+data/*.csv
+!data/sample_output.csv
+
+# NEW FOR SPEC-6: Visualization outputs
+output/
+plots/
+figures/
+*.png
+*.html
+*.svg
+*.pdf
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+temp/
