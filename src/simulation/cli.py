@@ -249,9 +249,9 @@ def run_simulation_scenario(config: SimulationConfig, scenario_name: str,
 
 def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None,
                           nationality_distribution: Optional[dict] = None) -> None:
-    """Print simulation header with parameters. Updated for SPEC-8."""
+    """Print simulation header with parameters."""
     print("\n" + "="*60)
-    print("WORKFORCE GROWTH SIMULATION (CORRECTED SPEC-8)")
+    print("WORKFORCE GROWTH SIMULATION")
     print("="*60)
     print(f"Industry: {INDUSTRY_NAME}")
     print(f"Initial workforce: {format_number(config.initial_workers)}")
@@ -260,7 +260,7 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     print(f"Random seed: {config.seed or 'None (random)'}")
     print(f"Output file: {config.output_path}")
     
-    # CORRECTED FOR SPEC-8: Show debug status
+    # Show debug status
     if config.debug:
         print(f"Debug mode: ENABLED")
     
@@ -269,13 +269,13 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
         print(f"\n⚠️  WARNING: Agent-mode with {format_number(config.initial_workers)} workers will be slow.")
         print("   Consider using --count-mode for large simulations.")
     
-    # CORRECTED FOR SPEC-8: Show fixed conversion cap information
+    # Show fixed conversion cap information
     from .empirical_params import calculate_annual_sim_cap
     annual_cap, residual = calculate_annual_sim_cap(config.initial_workers)
     cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
     
-    print(f"\nFixed green card conversion system (CORRECTED SPEC-8):")
-    print(f"  Annual conversions: {annual_cap} (FIXED - computed once)")
+    print(f"\nFixed green card conversion system:")
+    print(f"  Annual conversions: {annual_cap}")
     print(f"  Residual fraction: {residual:.6f}")
     print(f"  Based on: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)} * {format_number(config.initial_workers)}")
     print(f"  Cap proportion: {format_percentage(cap_proportion, 6)}")
@@ -285,16 +285,16 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
         from .empirical_params import calculate_per_country_cap
         per_country_cap, per_country_residual = calculate_per_country_cap(annual_cap)
         print(f"  Per-country cap: ENABLED ({format_percentage(PER_COUNTRY_CAP_SHARE)})")
-        print(f"  Max per country: {per_country_cap} conversions/year (FIXED)")
+        print(f"  Max per country: {per_country_cap} conversions/year")
         print(f"  Per-country residual: {per_country_residual:.6f}")
         print(f"  Queue mode: Separate nationality queues with FIFO within each")
     else:
         print(f"  Per-country cap: DISABLED")
         print(f"  Queue mode: Single global FIFO queue")
     
-    # Enhanced wage differentiation info (CORRECTED FOR SPEC-8)
+    # Enhanced wage differentiation info
     temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
-    print(f"\nEnhanced wage differentiation (CORRECTED SPEC-8):")
+    print(f"\nEnhanced wage differentiation:")
     print(f"  Starting wage: {format_currency(STARTING_WAGE)}")
     print(f"  Job change probability (permanent): {format_percentage(JOB_CHANGE_PROB_PERM)}")
     print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")

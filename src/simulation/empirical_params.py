@@ -80,7 +80,7 @@ REAL_US_WORKFORCE_SIZE = 167_000_000   # Current US workforce size (August 2025)
 PER_COUNTRY_CAP_SHARE = 0.07           # 7% per-country limit on employment-based green cards
 
 # CORRECTED FOR SPEC-8: Fixed annual conversion parameters
-CARRYOVER_FRACTION_STRATEGY = True     # Accumulate residual and grant extra when >=1
+CARRYOVER_FRACTION_STRATEGY = False     # Accumulate residual and grant extra when >=1
 ENABLE_COUNTRY_CAP = False             # Toggle for per-country cap (can be overridden by CLI)
 
 # Visualization options (FROM SPEC-6)
