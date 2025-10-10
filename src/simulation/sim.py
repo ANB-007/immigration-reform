@@ -386,12 +386,12 @@ class Simulation:
         Returns:
             Tuple of (total conversions, conversions by country)
         """
-        # 1. Add new permanent workers (all U.S. nationals per SPEC-4)
+        # 1. Add new permanent workers (all U.S. nationals per SPEC-4) - FIXED
         for _ in range(new_permanent):
             worker = Worker(
                 id=self.next_worker_id,
                 status=WorkerStatus.PERMANENT,
-                nationality=PERMANENT_NATIONALITY,  # FROM SPEC-4
+                nationality=PERMANENT_NATIONALITY,  # FIXED: Always US for NEW permanent workers
                 age=self.rng.integers(25, 65),
                 wage=STARTING_WAGE,
                 created_year=next_year,
@@ -427,6 +427,7 @@ class Simulation:
         converted_temps, conversions_by_country = self._process_green_card_conversions()
         
         return converted_temps, conversions_by_country
+
     
     def _process_green_card_conversions(self) -> Tuple[int, Dict[str, int]]:
         """

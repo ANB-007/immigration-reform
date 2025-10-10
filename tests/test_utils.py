@@ -21,14 +21,16 @@ class TestUtils:
     
     def test_save_and_load_results(self):
         """Test saving and loading simulation results."""
-        # Create test data with SPEC-5 features
+        # Create test data with SPEC-5 features - FIXED: Set country_cap_enabled properly
         states = [
             SimulationState(2025, 1000, 900, 100, 0, 0, 0, 95000.0, 95000.0, 95000.0, 95000000.0, 
-                          {"India": 0.7, "China": 0.1}, {}, {}),
+                        {"India": 0.7, "China": 0.1}, {}, {}, country_cap_enabled=False),
             SimulationState(2026, 1050, 940, 110, 40, 10, 5, 96000.0, 96500.0, 95000.0, 100800000.0,
-                          {"India": 0.69, "China": 0.11}, {"India": 3, "China": 2}, {"India": 15, "China": 5}),
+                        {"India": 0.69, "China": 0.11}, {"India": 3, "China": 2}, {"India": 15, "China": 5}, 
+                        country_cap_enabled=True),
             SimulationState(2027, 1100, 980, 120, 40, 10, 5, 97000.0, 97500.0, 95500.0, 106700000.0,
-                          {"India": 0.68, "China": 0.12}, {"India": 3, "China": 2}, {"India": 20, "China": 8})
+                        {"India": 0.68, "China": 0.12}, {"India": 3, "China": 2}, {"India": 20, "China": 8},
+                        country_cap_enabled=True)
         ]
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
@@ -61,9 +63,13 @@ class TestUtils:
                 # NEW FOR SPEC-5: Test per-country cap data
                 assert original.converted_by_country == loaded.converted_by_country
                 assert original.queue_backlog_by_country == loaded.queue_backlog_by_country
+                
+                # FIXED: Test country cap enabled status
+                assert loaded.country_cap_enabled == (bool(original.converted_by_country) or bool(original.queue_backlog_by_country))
         
         finally:
             os.unlink(temp_path)
+
     
     def test_save_and_load_results_without_nationality_columns(self):
         """Test saving and loading without nationality columns for backward compatibility."""
