@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import warnings
 
+import math
 import pandas as pd
 import numpy as np
 
@@ -604,7 +605,7 @@ class SimulationVisualizer:
 
 def format_currency(value: float) -> str:
     """Format currency values for display."""
-    return f"${value:,.0f}"
+    return f"${math.ceil(value):,.0f}"
 
 def format_number(value: int) -> str:
     """Format large numbers with commas."""

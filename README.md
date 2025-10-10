@@ -1,6 +1,6 @@
 # Workforce Growth Simulation
 
-A Python simulation modeling the growth dynamics of permanent versus temporary (H-1B) workers in the U.S. workforce over time, with comprehensive wage tracking, nationality segmentation, per-country conversion caps, and enhanced visualization capabilities.
+A Python simulation modeling the growth dynamics of permanent versus temporary (H-1B) workers in the U.S. workforce over time, with comprehensive wage tracking, nationality segmentation, per-country conversion caps, enhanced visualization capabilities, and comparative backlog analysis.
 
 ## Overview
 
@@ -25,11 +25,17 @@ This simulation models how the U.S. workforce grows over time, specifically trac
 - **FIFO Queue Management**: Separate nationality queues with backlog tracking
 - **Comparative Analysis**: Run simulations with and without per-country caps
 
-### **NEW: Enhanced Visualization (SPEC-6)**
+### Enhanced Visualization (SPEC-6)
 - **Interactive Charts**: Comparative wage analysis with publication-quality visualizations
 - **Scenario Comparison**: Automatic side-by-side comparison of capped vs uncapped scenarios
 - **Multiple Output Formats**: PNG for reports, HTML for interactive analysis
 - **Comprehensive Dashboard**: All-in-one view of simulation results
+
+### **NEW: Backlog Analysis by Nationality (SPEC-7)**
+- **Comparative Backlog Tracking**: Compare final-year backlogs by nationality between policy scenarios
+- **CSV Export**: Detailed backlog data for all nationalities including zero-backlog countries
+- **Backlog Visualizations**: Bar charts and interactive plots showing policy impact on different nationalities
+- **Integrated Analysis**: Seamlessly combines with existing wage and workforce visualizations
 
 ## Installation
 
