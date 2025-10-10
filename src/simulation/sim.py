@@ -2,7 +2,7 @@
 """
 Core simulation engine for workforce growth modeling.
 Handles worker dynamics, green card conversions, and wage tracking.
-CORRECTED FOR SPEC-8: Fixed per-country cap distribution to respect annual_sim_cap.
+CORRECTED FOR SPEC-8: Fixed queue synchronization to ensure invariants hold.
 """
 
 import logging
@@ -30,13 +30,13 @@ logger = logging.getLogger(__name__)
 class Simulation:
     """
     Core simulation engine for workforce growth modeling.
-    CORRECTED FOR SPEC-8 with proper per-country cap distribution.
+    CORRECTED FOR SPEC-8 with proper queue synchronization.
     """
     
     def __init__(self, config: SimulationConfig):
         """
         Initialize simulation with configuration.
-        CORRECTED FOR SPEC-8: Fixed per-country cap distribution.
+        CORRECTED FOR SPEC-8: Fixed per-country cap distribution and queue sync.
         
         Args:
             config: SimulationConfig object with simulation parameters
@@ -147,7 +147,7 @@ class Simulation:
     def _initialize_workforce(self) -> None:
         """
         Initialize the workforce with proper H-1B/permanent split.
-        CORRECTED FOR SPEC-8: Ensures synchronized queue initialization.
+        CORRECTED FOR SPEC-8: Ensures perfect queue synchronization.
         """
         initial_temporary = round(self.config.initial_workers * H1B_SHARE)
         initial_permanent = self.config.initial_workers - initial_temporary
@@ -158,6 +158,10 @@ class Simulation:
                 f"Small initial population ({self.config.initial_workers}). "
                 "Results may show discretization effects."
             )
+        
+        # CRITICAL FIX: Create deterministic temporary worker list ONCE
+        # This ensures both queues have identical workers in identical order
+        temp_workers_list = []
         
         # Agent-mode: Create individual Worker objects
         if self.config.agent_mode:
@@ -176,8 +180,7 @@ class Simulation:
                 self.workers.append(worker)
                 self.next_worker_id += 1
             
-            # Create temporary workers with nationality distribution
-            temp_workers_by_nationality = []
+            # Create temporary workers with deterministic nationality assignment
             for i in range(initial_temporary):
                 nationality = self._sample_nationality(is_temporary=True)
                 worker = Worker(
@@ -191,16 +194,11 @@ class Simulation:
                     year_joined=self.current_year
                 )
                 self.workers.append(worker)
-                temp_workers_by_nationality.append((worker.id, nationality, self.current_year))
+                
+                # Add to deterministic list
+                temp_worker = TemporaryWorker(worker.id, self.current_year, nationality)
+                temp_workers_list.append(temp_worker)
                 self.next_worker_id += 1
-            
-            # CORRECTED FOR SPEC-8: Add to synchronized queues in FIFO order
-            for worker_id, nationality, year_joined in temp_workers_by_nationality:
-                temp_worker = TemporaryWorker(worker_id, year_joined, nationality)
-                # Add to global queue (FIFO order)
-                self.global_queue.append(temp_worker)
-                # Add to country-specific queue
-                self.country_queues[nationality].append(temp_worker)
             
             # Calculate initial statistics
             wage_stats = WageStatistics.calculate(self.workers)
@@ -222,19 +220,21 @@ class Simulation:
                 temporary_nationalities={k: round(v * initial_temporary) for k, v in self.temp_nationality_distribution.items()}
             )
             
-            # Initialize queues for count mode too
-            temp_workers_by_nationality = []
+            # Create deterministic temp worker list for count mode
             for nationality, proportion in self.temp_nationality_distribution.items():
                 temp_workers_for_nationality = round(proportion * initial_temporary)
                 for i in range(temp_workers_for_nationality):
                     temp_worker = TemporaryWorker(self.next_worker_id, self.current_year, nationality)
-                    temp_workers_by_nationality.append(temp_worker)
+                    temp_workers_list.append(temp_worker)
                     self.next_worker_id += 1
-            
-            # Add to synchronized queues in FIFO order
-            for temp_worker in temp_workers_by_nationality:
-                self.global_queue.append(temp_worker)
-                self.country_queues[temp_worker.nationality].append(temp_worker)
+        
+        # CRITICAL FIX: Add the SAME workers to both queues in the SAME order
+        # This ensures perfect synchronization
+        for temp_worker in temp_workers_list:
+            # Add to global queue (FIFO order)
+            self.global_queue.append(temp_worker)
+            # Add to country-specific queue
+            self.country_queues[temp_worker.nationality].append(temp_worker)
         
         # Initialize per-country conversion statistics
         initial_conversions = {}
@@ -380,7 +380,8 @@ class Simulation:
             self.next_worker_id += 1
         
         # 2. Add new temporary workers with nationality distribution
-        new_temp_workers = []
+        # CRITICAL FIX: Create deterministic list first
+        new_temp_workers_list = []
         for _ in range(new_temporary):
             nationality = self._sample_nationality(is_temporary=True)
             worker = Worker(
@@ -394,14 +395,15 @@ class Simulation:
                 year_joined=next_year
             )
             self.workers.append(worker)
-            new_temp_workers.append((worker.id, nationality, next_year))
+            
+            temp_worker = TemporaryWorker(worker.id, next_year, nationality)
+            new_temp_workers_list.append(temp_worker)
             self.next_worker_id += 1
         
-        # Add new temporary workers to queues in FIFO order
-        for worker_id, nationality, year_joined in new_temp_workers:
-            temp_worker = TemporaryWorker(worker_id, year_joined, nationality)
+        # CRITICAL FIX: Add new workers to both queues from the SAME list
+        for temp_worker in new_temp_workers_list:
             self.global_queue.append(temp_worker)
-            self.country_queues[nationality].append(temp_worker)
+            self.country_queues[temp_worker.nationality].append(temp_worker)
         
         # 3. Process job changes and wage updates
         self._process_job_changes(next_year)
@@ -450,7 +452,7 @@ class Simulation:
     def _process_green_card_conversions(self, current_year: int) -> Tuple[int, Dict[str, int]]:
         """
         Process temporary-to-permanent conversions with fixed caps.
-        CORRECTED FOR SPEC-8: Ensures invariants hold.
+        CORRECTED FOR SPEC-8: Perfect queue synchronization.
         """
         # CORRECTED FOR SPEC-8: Calculate slots this year with carryover
         slots_this_year = self.annual_sim_cap
@@ -466,10 +468,11 @@ class Simulation:
         conversions_by_country = {}
         total_conversions = 0
         
+        # CRITICAL FIX: Track which workers are converted for perfect synchronization
+        converted_worker_ids = set()
+        
         if self.country_cap_enabled:
-            # CORRECTED: Per-country capped conversions - exact allocation first
-            
-            # First pass: Use exact per-country caps (no redistribution needed since caps sum to slots_this_year)
+            # Per-country capped conversions - exact allocation
             for nationality in self.temp_nationality_distribution.keys():
                 if nationality not in self.country_queues:
                     continue
@@ -481,37 +484,28 @@ class Simulation:
                 conversions_this_country = min(len(queue), per_country_cap)
                 
                 # Convert workers from this country
-                converted_ids = []
                 for _ in range(conversions_this_country):
                     if queue:
                         temp_worker = queue.popleft()
-                        converted_ids.append(temp_worker.worker_id)
+                        converted_worker_ids.add(temp_worker.worker_id)
                         
                         # Find and convert the actual worker
                         worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
                         if worker and worker.is_temporary:
                             worker.convert_to_permanent(current_year)
                 
-                # Remove same workers from global queue to maintain synchronization
-                for worker_id in converted_ids:
-                    self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id != worker_id])
-                
                 conversions_by_country[nationality] = conversions_this_country
                 total_conversions += conversions_this_country
-            
-            # No second pass needed since per-country caps already sum to annual_sim_cap
         
         else:
             # Global uncapped conversions (with fixed annual cap)
-            converted_ids = []
-            
             # Process conversions from global queue
             for _ in range(slots_this_year):
                 if not self.global_queue:
                     break
                 
                 temp_worker = self.global_queue.popleft()
-                converted_ids.append(temp_worker.worker_id)
+                converted_worker_ids.add(temp_worker.worker_id)
                 
                 # Find and convert the actual worker
                 worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
@@ -520,11 +514,14 @@ class Simulation:
                     nationality = worker.nationality
                     conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
                     total_conversions += 1
-            
-            # Remove same workers from country queues to maintain synchronization
-            for worker_id in converted_ids:
-                for nationality, queue in self.country_queues.items():
-                    self.country_queues[nationality] = deque([tw for tw in queue if tw.worker_id != worker_id])
+        
+        # CRITICAL FIX: Remove the EXACT SAME workers from both queue structures
+        # This ensures perfect synchronization between global and country queues
+        self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id not in converted_worker_ids])
+        
+        for nationality in self.country_queues:
+            self.country_queues[nationality] = deque([tw for tw in self.country_queues[nationality] 
+                                                     if tw.worker_id not in converted_worker_ids])
         
         return total_conversions, conversions_by_country
     
@@ -533,16 +530,16 @@ class Simulation:
         Process one simulation step in count-mode.
         CORRECTED FOR SPEC-8: Fixed caps with synchronized queues.
         """
-        # Add new temporary workers to queues
-        new_temp_workers = []
+        # CRITICAL FIX: Add new temporary workers to both queues from the SAME list
+        new_temp_workers_list = []
         for _ in range(new_temporary):
             nationality = self._sample_nationality(is_temporary=True)
             temp_worker = TemporaryWorker(self.next_worker_id, next_year, nationality)
-            new_temp_workers.append(temp_worker)
+            new_temp_workers_list.append(temp_worker)
             self.next_worker_id += 1
         
-        # Add to queues in FIFO order
-        for temp_worker in new_temp_workers:
+        # Add to queues from the same list
+        for temp_worker in new_temp_workers_list:
             self.global_queue.append(temp_worker)
             self.country_queues[temp_worker.nationality].append(temp_worker)
         
