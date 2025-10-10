@@ -231,7 +231,7 @@ def print_simulation_results(simulation: Simulation) -> None:
     """
     stats = simulation.get_summary_stats()
     
-    print("\\n" + "="*60)
+    print("\n" + "="*60)
     print("SIMULATION RESULTS")
     print("="*60)
     print(f"Years simulated: {stats['years_simulated']}")
@@ -242,24 +242,26 @@ def print_simulation_results(simulation: Simulation) -> None:
     print(f"Total growth: {format_number(stats['total_growth'])} workers")
     print(f"Average annual growth rate: {format_percentage(stats['average_annual_growth_rate'])}")
     
-    print("\\nWorkforce composition:")
+    print("\nWorkforce composition:")
     print(f"  Initial H-1B share: {format_percentage(stats['initial_h1b_share'])}")
     print(f"  Final H-1B share: {format_percentage(stats['final_h1b_share'])}")
     print(f"  H-1B share change: {format_percentage(stats['h1b_share_change'], 3)}")
     
-    print("\\nWorker flows:")
+    print("\nWorker flows:")
     print(f"  Total permanent entries: {format_number(stats['total_new_permanent'])}")
     print(f"  Total temporary entries: {format_number(stats['total_new_temporary'])}")
     print(f"  Total conversions (temp→perm): {format_number(stats['total_conversions'])}")
     
-    print("\\nConversion statistics:")
+    print("\nConversion statistics:")
     print(f"  Annual conversion cap: {format_number(stats['annual_conversion_cap'])}")
     print(f"  Cap utilization: {format_percentage(stats['conversion_utilization'])}")
     
     # NEW FOR SPEC-5: Per-country cap results
     if stats.get('country_cap_enabled'):
-        print(f"\\nPer-country cap results:")
-        print(f"  Per-country cap: {format_number(stats['per_country_cap'])} ({format_percentage(stats['per_country_cap_rate'])})")
+        print(f"\nPer-country cap results:")
+        per_country_cap = stats.get('per_country_cap', 0)
+        per_country_cap_rate = stats.get('per_country_cap_rate', 0)
+        print(f"  Per-country cap: {format_number(per_country_cap)} ({format_percentage(per_country_cap_rate)})")
         
         if 'total_conversions_by_country' in stats:
             print("  Total conversions by country:")
@@ -283,23 +285,23 @@ def print_simulation_results(simulation: Simulation) -> None:
         countries_with_backlogs = stats.get('countries_with_backlogs', 0)
         print(f"  Countries with backlogs: {countries_with_backlogs}")
     else:
-        print("\\nPer-country cap: DISABLED (global FIFO queue used)")
+        print("\nPer-country cap: DISABLED (global FIFO queue used)")
     
     # FROM SPEC-3: Wage statistics
-    print("\\nWage statistics:")
+    print("\nWage statistics:")
     print(f"  Initial average wage: {format_currency(stats['initial_avg_wage'])}")
     print(f"  Final average wage: {format_currency(stats['final_avg_wage'])}")
     print(f"  Total wage growth: {format_currency(stats['total_wage_growth'])}")
     print(f"  Average annual wage growth rate: {format_percentage(stats['average_annual_wage_growth_rate'])}")
     print(f"  Final total wage bill: {format_currency(stats['final_wage_bill'])}")
     
-    print("\\nJob mobility rates used:")
+    print("\nJob mobility rates used:")
     print(f"  Permanent workers: {format_percentage(stats['job_change_prob_permanent'])}")
     print(f"  Temporary workers: {format_percentage(stats['job_change_prob_temporary'])}")
     
     # FROM SPEC-4: Nationality statistics
     if 'initial_temp_nationalities' in stats and 'final_temp_nationalities' in stats:
-        print("\\nTemporary worker nationality changes:")
+        print("\nTemporary worker nationality changes:")
         print("  Initial top nationalities:")
         for nationality, proportion in stats['initial_temp_nationalities'].items():
             print(f"    {nationality}: {format_percentage(proportion)}")

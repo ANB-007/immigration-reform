@@ -58,9 +58,12 @@ class Simulation:
         
         # NEW FOR SPEC-5: Per-country cap system
         self.country_cap_enabled = config.country_cap_enabled
-        # FIXED: Ensure per-country cap is at least 1 for meaningful testing
-        self.per_country_cap = max(1, round(self.annual_conversion_cap * PER_COUNTRY_CAP_SHARE))
-
+        # FIXED: Ensure per-country cap is at least 1 for meaningful functionality
+        if self.country_cap_enabled:
+            raw_per_country_cap = round(self.annual_conversion_cap * PER_COUNTRY_CAP_SHARE)
+            self.per_country_cap = max(1, raw_per_country_cap)  # Ensure at least 1
+        else:
+            self.per_country_cap = 0
         
         # Conversion queues - either single global or per-country (NEW FOR SPEC-5)
         if self.country_cap_enabled:
@@ -696,9 +699,10 @@ class Simulation:
         total_perm = sum(nationality_stats.permanent_nationalities.values())
         if total_perm > 0:
             for nationality, count in sorted(nationality_stats.permanent_nationalities.items(), 
-                                           key=lambda x: x[1], reverse=True):
+                                        key=lambda x: x[1], reverse=True):
                 percentage = (count / total_perm) * 100
-                print(f"  {nationality}: {percentage:.1f%} ({count:,} workers)")
+                # FIXED: Use proper string formatting instead of % operator
+                print(f"  {nationality}: {percentage:.1f}% ({count:,} workers)")
         else:
             print("  No permanent workers")
         
@@ -710,7 +714,9 @@ class Simulation:
             for nationality, proportion in sorted(temp_distribution.items(), 
                                                 key=lambda x: x[1], reverse=True):
                 count = nationality_stats.temporary_nationalities[nationality]
-                print(f"  {nationality}: {proportion:.1%} ({count:,} workers)")
+                percentage = proportion * 100
+                # FIXED: Use proper string formatting instead of % operator
+                print(f"  {nationality}: {percentage:.1f}% ({count:,} workers)")
         else:
             print("  No temporary workers")
         
@@ -720,12 +726,13 @@ class Simulation:
             queue_backlogs = self._calculate_queue_backlogs()
             if queue_backlogs:
                 for nationality, backlog in sorted(queue_backlogs.items(), 
-                                                 key=lambda x: x[1], reverse=True):
+                                                key=lambda x: x[1], reverse=True):
                     print(f"  {nationality}: {backlog:,} workers in queue")
             else:
                 print("  No workers in conversion queues")
         
         print("="*50)
+
     
     def get_growth_rate(self, year_span: int = 1) -> Optional[float]:
         """
