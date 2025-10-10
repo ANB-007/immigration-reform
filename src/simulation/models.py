@@ -2,13 +2,12 @@
 """
 Data models for the workforce simulation.
 Defines Worker agents and related data structures.
-Updated for SPEC-7 to include backlog analysis functionality.
+Updated for SPEC-8 to remove ConversionCapTracker (moved logic to Simulation class).
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List, Deque
+from typing import Optional, Dict, Any, List
 from enum import Enum
-from collections import deque
 
 from .empirical_params import STARTING_WAGE, PERMANENT_NATIONALITY
 
@@ -21,21 +20,7 @@ class WorkerStatus(Enum):
 class Worker:
     """
     Represents a single worker agent in the simulation.
-    Updated for SPEC-7 with backlog analysis considerations.
-    
-    Attributes:
-        id: Unique identifier for the worker
-        status: Worker status (permanent or temporary/H-1B)
-        nationality: Worker's nationality (immutable) (FROM SPEC-4)
-        age: Age of the worker in years
-        year_joined: Year the worker joined as temporary (for FIFO conversion)
-        wage: Current wage in USD per year (FROM SPEC-3)
-        created_year: Year the worker was created/hired (FROM SPEC-3)
-        entry_year: Year the worker entered the workforce
-        skills: Skill level or category (for future extensions)
-        occupation: Job category or title (for future extensions)
-        employer_id: ID of employing organization (for future extensions)
-        attributes: Additional extensible attributes
+    Updated for SPEC-8 with enhanced wage tracking and status-dependent behavior.
     """
     id: int
     status: WorkerStatus
@@ -45,6 +30,7 @@ class Worker:
     wage: float = STARTING_WAGE  # FROM SPEC-3: Current wage in USD per year
     created_year: int = 2025  # FROM SPEC-3: Year worker was created/hired
     entry_year: int = 2025  # Year entered workforce
+    conversion_year: Optional[int] = None  # FROM SPEC-8: Year converted to permanent
     skills: Optional[List[str]] = None
     occupation: Optional[str] = None
     employer_id: Optional[int] = None
@@ -84,6 +70,11 @@ class Worker:
         """Returns True if worker is a U.S. national (FROM SPEC-4)."""
         return self.nationality == PERMANENT_NATIONALITY
     
+    @property
+    def was_converted(self) -> bool:
+        """Returns True if worker was converted from temporary to permanent (FROM SPEC-8)."""
+        return self.conversion_year is not None
+    
     def years_in_workforce(self, current_year: int) -> int:
         """Calculate years the worker has been in the workforce."""
         return max(0, current_year - self.entry_year)
@@ -94,13 +85,19 @@ class Worker:
             return 0
         return max(0, current_year - self.year_joined)
     
+    def years_as_permanent(self, current_year: int) -> int:
+        """Calculate years the worker has been in permanent status (FROM SPEC-8)."""
+        if self.status != WorkerStatus.PERMANENT:
+            return 0
+        if self.conversion_year is not None:
+            # Converted worker: count from conversion year
+            return max(0, current_year - self.conversion_year)
+        else:
+            # Initially permanent worker: count from entry year
+            return max(0, current_year - self.entry_year)
+    
     def apply_wage_jump(self, jump_factor: float) -> None:
-        """
-        Apply wage jump due to job change (FROM SPEC-3).
-        
-        Args:
-            jump_factor: Multiplicative factor for wage increase (e.g., 1.08 for 8% increase)
-        """
+        """Apply wage jump due to job change (FROM SPEC-3)."""
         if jump_factor < 0:
             raise ValueError(f"Jump factor must be non-negative, got {jump_factor}")
         
@@ -108,13 +105,14 @@ class Worker:
         effective_factor = max(jump_factor, 1.0)
         self.wage *= effective_factor
     
-    def convert_to_permanent(self) -> None:
+    def convert_to_permanent(self, conversion_year: int) -> None:
         """
-        Convert worker from temporary to permanent status (FROM SPEC-4).
+        Convert worker from temporary to permanent status (FROM SPEC-4, UPDATED FOR SPEC-8).
         Nationality remains unchanged as per SPEC-4 requirements.
         """
         if self.status == WorkerStatus.TEMPORARY:
             self.status = WorkerStatus.PERMANENT
+            self.conversion_year = conversion_year  # FROM SPEC-8
         else:
             raise ValueError(f"Cannot convert worker {self.id}: already permanent")
 
@@ -122,24 +120,7 @@ class Worker:
 class SimulationState:
     """
     Represents the state of the simulation at a given time step.
-    Updated for SPEC-7 to include backlog analysis statistics.
-    
-    Attributes:
-        year: Current simulation year
-        total_workers: Total number of workers
-        permanent_workers: Number of permanent workers
-        temporary_workers: Number of temporary/H-1B workers
-        new_permanent: New permanent workers added this year
-        new_temporary: New temporary workers added this year
-        converted_temps: Temporary workers converted to permanent
-        avg_wage_total: Average wage across all workers (FROM SPEC-3)
-        avg_wage_permanent: Average wage for permanent workers (FROM SPEC-3)
-        avg_wage_temporary: Average wage for temporary workers (FROM SPEC-3)
-        total_wage_bill: Total wages paid to all workers (FROM SPEC-3)
-        top_temp_nationalities: Top 3 nationalities for temporary workers (FROM SPEC-4)
-        converted_by_country: Conversions by nationality this year (FROM SPEC-5)
-        queue_backlog_by_country: Queue backlogs by nationality (FROM SPEC-5)
-        country_cap_enabled: Whether per-country cap is active (FROM SPEC-5)
+    Updated for SPEC-8 to include fixed annual conversion tracking.
     """
     year: int
     total_workers: int
@@ -156,6 +137,8 @@ class SimulationState:
     converted_by_country: Dict[str, int] = field(default_factory=dict)  # FROM SPEC-5
     queue_backlog_by_country: Dict[str, int] = field(default_factory=dict)  # FROM SPEC-5
     country_cap_enabled: bool = False  # FROM SPEC-5
+    annual_conversion_cap: int = 0  # FROM SPEC-8: Fixed annual cap
+    cumulative_conversions: int = 0  # FROM SPEC-8: Running total of conversions
     
     def __post_init__(self):
         """Validation of state consistency."""
@@ -178,6 +161,13 @@ class SimulationState:
         
         if any(count < 0 for count in self.queue_backlog_by_country.values()):
             raise ValueError("All queue backlog counts must be non-negative")
+        
+        # FROM SPEC-8: Validate conversion tracking
+        if self.annual_conversion_cap < 0:
+            raise ValueError("Annual conversion cap must be non-negative")
+        
+        if self.cumulative_conversions < 0:
+            raise ValueError("Cumulative conversions must be non-negative")
 
     @property 
     def h1b_share(self) -> float:
@@ -204,7 +194,8 @@ class SimulationConfig:
     agent_mode: bool = True  # FROM SPEC-3: Default to agent-mode for wage tracking
     show_nationality_summary: bool = False  # FROM SPEC-4: Show nationality breakdown
     country_cap_enabled: bool = False  # FROM SPEC-5: Enable per-country cap
-    compare_backlogs: bool = False  # NEW FOR SPEC-7: Enable backlog comparison analysis
+    compare_backlogs: bool = False  # FROM SPEC-7: Enable backlog comparison analysis
+    debug: bool = False  # FROM SPEC-8: Enable debug output
     
     def __post_init__(self):
         """Validation of configuration parameters."""
@@ -233,9 +224,7 @@ class TemporaryWorker:
 
 @dataclass
 class WageStatistics:
-    """
-    Container for wage statistics calculation (FROM SPEC-3).
-    """
+    """Container for wage statistics calculation (FROM SPEC-3)."""
     total_workers: int
     permanent_workers: int
     temporary_workers: int
@@ -246,15 +235,7 @@ class WageStatistics:
     
     @classmethod
     def calculate(cls, workers: List[Worker]) -> 'WageStatistics':
-        """
-        Calculate wage statistics from a list of workers.
-        
-        Args:
-            workers: List of Worker objects
-            
-        Returns:
-            WageStatistics object with calculated statistics
-        """
+        """Calculate wage statistics from a list of workers."""
         if not workers:
             return cls(0, 0, 0, 0.0, 0.0, 0.0, 0.0)
         
@@ -286,24 +267,14 @@ class WageStatistics:
 
 @dataclass
 class NationalityStatistics:
-    """
-    Container for nationality distribution statistics (FROM SPEC-4).
-    """
+    """Container for nationality distribution statistics (FROM SPEC-4)."""
     total_workers: int
     permanent_nationalities: Dict[str, int]
     temporary_nationalities: Dict[str, int]
     
     @classmethod
     def calculate(cls, workers: List[Worker]) -> 'NationalityStatistics':
-        """
-        Calculate nationality statistics from a list of workers.
-        
-        Args:
-            workers: List of Worker objects
-            
-        Returns:
-            NationalityStatistics object with calculated statistics
-        """
+        """Calculate nationality statistics from a list of workers."""
         if not workers:
             return cls(0, {}, {})
         
@@ -323,12 +294,7 @@ class NationalityStatistics:
         )
     
     def get_temporary_distribution(self) -> Dict[str, float]:
-        """
-        Get temporary worker nationality distribution as proportions.
-        
-        Returns:
-            Dictionary mapping nationality to proportion of temporary workers
-        """
+        """Get temporary worker nationality distribution as proportions."""
         total_temp = sum(self.temporary_nationalities.values())
         if total_temp == 0:
             return {}
@@ -339,96 +305,14 @@ class NationalityStatistics:
         }
     
     def get_top_temporary_nationalities(self, n: int = 3) -> Dict[str, float]:
-        """
-        Get top N nationalities for temporary workers.
-        
-        Args:
-            n: Number of top nationalities to return
-            
-        Returns:
-            Dictionary with top N nationalities and their proportions
-        """
+        """Get top N nationalities for temporary workers."""
         distribution = self.get_temporary_distribution()
         sorted_nationalities = sorted(distribution.items(), key=lambda x: x[1], reverse=True)
         return dict(sorted_nationalities[:n])
 
 @dataclass
-class CountryCapStatistics:
-    """
-    Container for per-country cap statistics (FROM SPEC-5).
-    """
-    total_conversions: int
-    conversions_by_country: Dict[str, int]
-    queue_backlogs: Dict[str, int]
-    per_country_limit: int
-    cap_enabled: bool
-    
-    @classmethod
-    def calculate(cls, country_queues: Dict[str, Deque[TemporaryWorker]], 
-                 conversions_by_country: Dict[str, int], 
-                 per_country_limit: int, cap_enabled: bool) -> 'CountryCapStatistics':
-        """
-        Calculate per-country cap statistics.
-        
-        Args:
-            country_queues: Dictionary mapping nationality to conversion queue
-            conversions_by_country: Conversions by nationality this year
-            per_country_limit: Maximum conversions per country this year
-            cap_enabled: Whether per-country cap is active
-            
-        Returns:
-            CountryCapStatistics object
-        """
-        total_conversions = sum(conversions_by_country.values())
-        queue_backlogs = {
-            nationality: len(queue) 
-            for nationality, queue in country_queues.items()
-        }
-        
-        return cls(
-            total_conversions=total_conversions,
-            conversions_by_country=conversions_by_country.copy(),
-            queue_backlogs=queue_backlogs,
-            per_country_limit=per_country_limit,
-            cap_enabled=cap_enabled
-        )
-    
-    def get_utilization_by_country(self) -> Dict[str, float]:
-        """
-        Calculate cap utilization rate by country.
-        
-        Returns:
-            Dictionary mapping nationality to utilization rate (0.0 to 1.0)
-        """
-        if not self.cap_enabled or self.per_country_limit == 0:
-            return {}
-        
-        return {
-            nationality: conversions / self.per_country_limit
-            for nationality, conversions in self.conversions_by_country.items()
-            if conversions > 0
-        }
-    
-    def get_countries_at_cap(self) -> List[str]:
-        """
-        Get list of countries that hit their per-country cap.
-        
-        Returns:
-            List of nationality strings that reached the cap
-        """
-        if not self.cap_enabled:
-            return []
-        
-        return [
-            nationality for nationality, conversions in self.conversions_by_country.items()
-            if conversions >= self.per_country_limit
-        ]
-
-@dataclass
 class BacklogAnalysis:
-    """
-    Container for backlog analysis statistics (NEW FOR SPEC-7).
-    """
+    """Container for backlog analysis statistics (FROM SPEC-7)."""
     scenario: str  # "capped" or "uncapped"
     backlog_by_nationality: Dict[str, int]
     total_backlog: int
@@ -436,16 +320,7 @@ class BacklogAnalysis:
     
     @classmethod
     def from_simulation(cls, sim, scenario: str) -> 'BacklogAnalysis':
-        """
-        Create BacklogAnalysis from a completed simulation.
-        
-        Args:
-            sim: Simulation object
-            scenario: Scenario name ("capped" or "uncapped")
-            
-        Returns:
-            BacklogAnalysis object
-        """
+        """Create BacklogAnalysis from a completed simulation."""
         from .empirical_params import TEMP_NATIONALITY_DISTRIBUTION
         
         # Initialize all nationalities with zero backlog
@@ -473,12 +348,7 @@ class BacklogAnalysis:
         )
     
     def to_dataframe(self) -> 'pd.DataFrame':
-        """
-        Convert backlog analysis to pandas DataFrame for visualization.
-        
-        Returns:
-            DataFrame with nationality, backlog_size, and scenario columns
-        """
+        """Convert backlog analysis to pandas DataFrame for visualization."""
         import pandas as pd
         
         data = []
@@ -492,15 +362,7 @@ class BacklogAnalysis:
         return pd.DataFrame(data)
     
     def get_top_backlogs(self, n: int = 5) -> Dict[str, int]:
-        """
-        Get top N nationalities by backlog size.
-        
-        Args:
-            n: Number of top nationalities to return
-            
-        Returns:
-            Dictionary with top N nationalities and their backlog sizes
-        """
+        """Get top N nationalities by backlog size."""
         sorted_backlogs = sorted(self.backlog_by_nationality.items(), 
                                key=lambda x: x[1], reverse=True)
         return dict(sorted_backlogs[:n])
