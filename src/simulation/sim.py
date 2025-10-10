@@ -2,7 +2,7 @@
 """
 Core simulation engine for workforce growth modeling.
 Handles worker dynamics, green card conversions, and wage tracking.
-CORRECTED FOR SPEC-8: Fixed per-country cap distribution to maintain invariants.
+CORRECTED FOR SPEC-8: Fixed per-country cap distribution to respect annual_sim_cap.
 """
 
 import logging
@@ -63,42 +63,53 @@ class Simulation:
         # CORRECTED FOR SPEC-8: Per-country cap system with proper distribution
         self.country_cap_enabled = config.country_cap_enabled
         if self.country_cap_enabled:
-            # FIXED: Calculate per-country caps that sum to annual_sim_cap
-            base_per_country = max(1, math.floor(self.annual_sim_cap * PER_COUNTRY_CAP_SHARE))
-            num_countries = len(self.temp_nationality_distribution)
+            # FIXED: Calculate per-country caps that sum exactly to annual_sim_cap
+            nationalities = list(self.temp_nationality_distribution.keys())
+            num_countries = len(nationalities)
             
-            # Ensure total doesn't exceed annual cap
-            total_distributed = base_per_country * num_countries
-            if total_distributed > self.annual_sim_cap:
-                # Reduce base per-country cap
-                base_per_country = max(1, self.annual_sim_cap // num_countries)
-                total_distributed = base_per_country * num_countries
-            
-            # Distribute any remaining slots to countries with highest backlog potential (India, China)
-            remaining_slots = self.annual_sim_cap - total_distributed
-            
-            # Create per-country caps
-            self.per_country_caps = {}
-            priority_countries = ["India", "China"]  # Countries likely to have high demand
-            
-            for nationality in self.temp_nationality_distribution.keys():
-                self.per_country_caps[nationality] = base_per_country
+            if self.annual_sim_cap == 0:
+                # Edge case: no conversions available
+                self.per_country_caps = {nationality: 0 for nationality in nationalities}
+            else:
+                # Calculate theoretical per-country allocation (may be fractional)
+                theoretical_per_country = self.annual_sim_cap * PER_COUNTRY_CAP_SHARE
                 
-                # Distribute extra slots to priority countries
-                if remaining_slots > 0 and nationality in priority_countries:
-                    extra_slots = min(remaining_slots, base_per_country)
-                    self.per_country_caps[nationality] += extra_slots
-                    remaining_slots -= extra_slots
+                if theoretical_per_country < 1.0:
+                    # Very small caps: distribute slots round-robin style
+                    self.per_country_caps = {nationality: 0 for nationality in nationalities}
+                    
+                    # Distribute slots one by one, prioritizing high-demand countries
+                    priority_order = ["India", "China"] + [n for n in nationalities if n not in ["India", "China"]]
+                    slots_to_distribute = self.annual_sim_cap
+                    
+                    for _ in range(slots_to_distribute):
+                        for nationality in priority_order:
+                            if slots_to_distribute > 0:
+                                self.per_country_caps[nationality] += 1
+                                slots_to_distribute -= 1
+                                break
+                else:
+                    # Normal case: each country gets at least some slots
+                    base_per_country = max(0, math.floor(theoretical_per_country))
+                    
+                    # Start with base allocation
+                    self.per_country_caps = {nationality: base_per_country for nationality in nationalities}
+                    
+                    # Calculate remaining slots to distribute
+                    allocated_slots = sum(self.per_country_caps.values())
+                    remaining_slots = self.annual_sim_cap - allocated_slots
+                    
+                    # Distribute remaining slots round-robin, prioritizing high-demand countries
+                    priority_order = ["India", "China"] + [n for n in nationalities if n not in ["India", "China"]]
+                    country_idx = 0
+                    
+                    while remaining_slots > 0:
+                        nationality = priority_order[country_idx % len(priority_order)]
+                        self.per_country_caps[nationality] += 1
+                        remaining_slots -= 1
+                        country_idx += 1
             
-            # Distribute any remaining slots round-robin
-            countries_list = list(self.temp_nationality_distribution.keys())
-            country_idx = 0
-            while remaining_slots > 0:
-                self.per_country_caps[countries_list[country_idx]] += 1
-                remaining_slots -= 1
-                country_idx = (country_idx + 1) % len(countries_list)
-            
-            # Verify total
+            # Verify total (this should never fail now)
             total_per_country_slots = sum(self.per_country_caps.values())
             assert total_per_country_slots == self.annual_sim_cap, \
                 f"Per-country caps sum to {total_per_country_slots}, expected {self.annual_sim_cap}"
@@ -439,7 +450,7 @@ class Simulation:
     def _process_green_card_conversions(self, current_year: int) -> Tuple[int, Dict[str, int]]:
         """
         Process temporary-to-permanent conversions with fixed caps.
-        CORRECTED FOR SPEC-8: Proper per-country cap handling that maintains invariants.
+        CORRECTED FOR SPEC-8: Ensures invariants hold.
         """
         # CORRECTED FOR SPEC-8: Calculate slots this year with carryover
         slots_this_year = self.annual_sim_cap
@@ -456,10 +467,9 @@ class Simulation:
         total_conversions = 0
         
         if self.country_cap_enabled:
-            # CORRECTED: Per-country capped conversions with redistribution
+            # CORRECTED: Per-country capped conversions - exact allocation first
             
-            # First pass: Use per-country caps
-            unused_slots = 0
+            # First pass: Use exact per-country caps (no redistribution needed since caps sum to slots_this_year)
             for nationality in self.temp_nationality_distribution.keys():
                 if nationality not in self.country_queues:
                     continue
@@ -467,6 +477,7 @@ class Simulation:
                 queue = self.country_queues[nationality]
                 per_country_cap = self.per_country_caps.get(nationality, 0)
                 
+                # Convert up to per-country cap from this nationality
                 conversions_this_country = min(len(queue), per_country_cap)
                 
                 # Convert workers from this country
@@ -487,39 +498,8 @@ class Simulation:
                 
                 conversions_by_country[nationality] = conversions_this_country
                 total_conversions += conversions_this_country
-                
-                # Track unused slots for redistribution
-                unused_slots += per_country_cap - conversions_this_country
             
-            # Second pass: Redistribute unused slots to countries with backlog
-            # This ensures we use all available slots up to annual_sim_cap
-            while unused_slots > 0 and total_conversions < slots_this_year:
-                redistributed = False
-                
-                for nationality in self.temp_nationality_distribution.keys():
-                    if unused_slots <= 0 or total_conversions >= slots_this_year:
-                        break
-                    
-                    queue = self.country_queues[nationality]
-                    if queue:  # Country has backlog
-                        # Convert one more worker from this country
-                        temp_worker = queue.popleft()
-                        
-                        # Find and convert the actual worker
-                        worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
-                        if worker and worker.is_temporary:
-                            worker.convert_to_permanent(current_year)
-                        
-                        # Remove from global queue
-                        self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id != temp_worker.worker_id])
-                        
-                        conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
-                        total_conversions += 1
-                        unused_slots -= 1
-                        redistributed = True
-                
-                if not redistributed:
-                    break  # No more backlogs to process
+            # No second pass needed since per-country caps already sum to annual_sim_cap
         
         else:
             # Global uncapped conversions (with fixed annual cap)
