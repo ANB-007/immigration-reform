@@ -4,6 +4,7 @@ Streamlined data models for workforce simulation.
 SPEC-10: Eliminated hardcoding, removed redundant variables, implemented on-the-fly aggregation.
 All temporal attributes are dynamically determined, aggregates computed from worker data.
 CRITICAL FIX: Resolved field() bug, fixed BacklogAnalysis counting, proper Worker initialization.
+EMERGENCY FIX: Fixed 'workers' variable name error.
 """
 
 from dataclasses import dataclass, field
@@ -353,7 +354,8 @@ class SimulationState:
     @property
     def avg_wage_permanent(self) -> float:
         """Average wage of permanent workers."""
-        permanent_wages = [w.wage for w in workers if w.is_permanent]
+        # EMERGENCY FIX: Changed 'workers' to 'self.workers'
+        permanent_wages = [w.wage for w in self.workers if w.is_permanent]
         return sum(permanent_wages) / len(permanent_wages) if permanent_wages else 95000.0
     
     @property
