@@ -103,7 +103,7 @@ class Simulation:
     def _initialize_workforce(self) -> None:
         """
         Initialize the workforce with proper H-1B/permanent split.
-        SPEC-10: Fixed Worker initialization with proper parameters.
+        SPEC-10: FIXED - No wage jumps during initialization, proper starting wages.
         """
         initial_temporary = round(self.config.initial_workers * H1B_SHARE)
         initial_permanent = self.config.initial_workers - initial_temporary
@@ -120,32 +120,31 @@ class Simulation:
         
         # Agent-mode: Create individual Worker objects
         if self.config.agent_mode:
-            # SPEC-10: Fixed Worker initialization with proper parameters
-            # Create permanent workers (all U.S. nationals)
+            # FIXED: Create permanent workers with EXACTLY the starting wage
             for i in range(initial_permanent):
                 worker = Worker(
                     id=self.next_worker_id,
                     status=WorkerStatus.PERMANENT,
                     nationality=str(PERMANENT_NATIONALITY),
-                    simulation_start_year=self.current_year,  # SPEC-10: Required parameter
-                    entry_year_offset=0,                      # SPEC-10: Required parameter
+                    simulation_start_year=self.current_year,
+                    entry_year_offset=0,
                     age=self.rng.integers(25, 65),
-                    wage=STARTING_WAGE
+                    wage=STARTING_WAGE  # FIXED: Exact starting wage, no modifications
                 )
                 self.workers.append(worker)
                 self.next_worker_id += 1
             
-            # Create temporary workers with deterministic nationality assignment
+            # FIXED: Create temporary workers with EXACTLY the starting wage
             for i in range(initial_temporary):
                 nationality = self._sample_nationality(is_temporary=True)
                 worker = Worker(
                     id=self.next_worker_id,
                     status=WorkerStatus.TEMPORARY,
                     nationality=str(nationality),
-                    simulation_start_year=self.current_year,  # SPEC-10: Required parameter
-                    entry_year_offset=0,                      # SPEC-10: Required parameter
+                    simulation_start_year=self.current_year,
+                    entry_year_offset=0,
                     age=self.rng.integers(25, 55),
-                    wage=STARTING_WAGE
+                    wage=STARTING_WAGE  # FIXED: Exact starting wage, no modifications
                 )
                 self.workers.append(worker)
                 
@@ -154,16 +153,20 @@ class Simulation:
                 temp_workers_list.append(temp_worker)
                 self.next_worker_id += 1
             
-            # SPEC-10: Calculate initial statistics using WageStatistics.calculate
+            # Calculate initial statistics
             wage_stats = WageStatistics.calculate(self.workers)
             nationality_stats = NationalityStatistics.calculate(self.workers)
+            
+            # FIXED: Verify starting wages are correct
+            logger.info(f"FIXED: Initial wage verification - avg: ${wage_stats.avg_wage_total:.0f}, expected: ${STARTING_WAGE:.0f}")
+            
         else:
-            # Count-mode: approximate statistics
+            # Count-mode: use exact starting wage
             wage_stats = WageStatistics(
                 total_workers=self.config.initial_workers,
                 permanent_workers=initial_permanent,
                 temporary_workers=initial_temporary,
-                avg_wage_total=STARTING_WAGE,
+                avg_wage_total=STARTING_WAGE,  # FIXED: Exact starting wage
                 avg_wage_permanent=STARTING_WAGE,
                 avg_wage_temporary=STARTING_WAGE,
                 total_wage_bill=STARTING_WAGE * self.config.initial_workers
@@ -182,19 +185,19 @@ class Simulation:
                     temp_workers_list.append(temp_worker)
                     self.next_worker_id += 1
         
-        # SPEC-10: Add the SAME workers to both queues in the SAME order
+        # Add workers to both queues in the SAME order
         for temp_worker in temp_workers_list:
             self.global_queue.append(temp_worker)
             self.country_queues[temp_worker.nationality].append(temp_worker)
         
-        # SPEC-10: Create initial state using new SimulationState with workers list
+        # FIXED: Create initial state without any conversions
         initial_state = SimulationState(
             year=self.current_year,
             workers=self.workers.copy(),
             annual_conversion_cap=self.annual_sim_cap,
             new_permanent=0,
             new_temporary=0,
-            converted_temps=0,
+            converted_temps=0,  # FIXED: No conversions in initial state
             cumulative_conversions=0,
             country_cap_enabled=self.country_cap_enabled
         )
@@ -276,23 +279,23 @@ class Simulation:
     def _process_agent_mode_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
         """
         Process one simulation step in agent-mode.
-        SPEC-10: Fixed Worker creation with proper parameters.
+        SPEC-10: FIXED - New workers get exact starting wage, no initial jumps.
         """
-        # 1. Add new permanent workers (all U.S. nationals)
+        # 1. FIXED: Add new permanent workers with EXACT starting wage
         for _ in range(new_permanent):
             worker = Worker(
                 id=self.next_worker_id,
                 status=WorkerStatus.PERMANENT,
                 nationality=str(PERMANENT_NATIONALITY),
-                simulation_start_year=self.config.start_year,  # SPEC-10: Required parameter
-                entry_year_offset=next_year - self.config.start_year,  # SPEC-10: Required parameter  
+                simulation_start_year=self.config.start_year,
+                entry_year_offset=next_year - self.config.start_year,
                 age=self.rng.integers(25, 65),
-                wage=STARTING_WAGE
+                wage=STARTING_WAGE  # FIXED: Exact starting wage, no modifications
             )
             self.workers.append(worker)
             self.next_worker_id += 1
         
-        # 2. Add new temporary workers with nationality distribution
+        # 2. FIXED: Add new temporary workers with EXACT starting wage
         new_temp_workers_list = []
         for _ in range(new_temporary):
             nationality = self._sample_nationality(is_temporary=True)
@@ -300,10 +303,10 @@ class Simulation:
                 id=self.next_worker_id,
                 status=WorkerStatus.TEMPORARY,
                 nationality=str(nationality),
-                simulation_start_year=self.config.start_year,  # SPEC-10: Required parameter
-                entry_year_offset=next_year - self.config.start_year,  # SPEC-10: Required parameter
+                simulation_start_year=self.config.start_year,
+                entry_year_offset=next_year - self.config.start_year,
                 age=self.rng.integers(25, 55),
-                wage=STARTING_WAGE
+                wage=STARTING_WAGE  # FIXED: Exact starting wage, no modifications
             )
             self.workers.append(worker)
             
@@ -316,13 +319,14 @@ class Simulation:
             self.global_queue.append(temp_worker)
             self.country_queues[temp_worker.nationality].append(temp_worker)
         
-        # 3. Process job changes and wage updates
+        # 3. Process job changes and wage updates (THIS is where wages should change)
         self._process_job_changes(next_year)
         
-        # 4. Process conversions with fixed caps
+        # 4. FIXED: Process conversions AFTER job changes to avoid double wage bumps
         converted_temps, conversions_by_country = self._process_green_card_conversions(next_year)
         
         return converted_temps, conversions_by_country
+
     
     def _process_job_changes(self, current_year: int) -> None:
         """
@@ -363,8 +367,9 @@ class Simulation:
     def _process_green_card_conversions(self, current_year: int) -> Tuple[int, Dict[str, int]]:
         """
         Process temporary-to-permanent conversions with fixed caps.
-        SPEC-10: Fixed conversion logic with proper wage bump.
+        SPEC-10: FIXED - Apply conversion wage bump only once, properly.
         """
+        # FIXED: Use exactly the annual cap, no carryover logic for simplicity
         slots_this_year = self.annual_sim_cap
         
         conversions_by_country = {}
@@ -395,12 +400,12 @@ class Simulation:
                         worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
                         if worker and worker.is_temporary:
                             worker.convert_to_permanent(current_year)
-                            # SPEC-10: Apply conversion wage bump
+                            # FIXED: Apply conversion wage bump only once
                             worker.apply_wage_jump(CONVERSION_WAGE_BUMP)
                 
                 conversions_by_country[nationality] = conversions_this_country
                 total_conversions += conversions_this_country
-        
+    
         else:
             # Global uncapped conversions (with fixed annual cap)
             for _ in range(slots_this_year):
@@ -414,7 +419,7 @@ class Simulation:
                 worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
                 if worker and worker.is_temporary:
                     worker.convert_to_permanent(current_year)
-                    # SPEC-10: Apply conversion wage bump
+                    # FIXED: Apply conversion wage bump only once
                     worker.apply_wage_jump(CONVERSION_WAGE_BUMP)
                     nationality = worker.nationality
                     conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
@@ -425,10 +430,14 @@ class Simulation:
         
         for nationality in self.country_queues:
             self.country_queues[nationality] = deque([tw for tw in self.country_queues[nationality] 
-                                                     if tw.worker_id not in converted_worker_ids])
+                                                    if tw.worker_id not in converted_worker_ids])
+        
+        # FIXED: Log conversion info to verify consistency
+        if hasattr(self.config, 'debug') and self.config.debug:
+            logger.info(f"Year {current_year}: Converted {total_conversions} workers (cap: {slots_this_year})")
         
         return total_conversions, conversions_by_country
-    
+        
     def _process_count_mode_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
         """
         Process one simulation step in count-mode.

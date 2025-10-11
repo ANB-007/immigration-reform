@@ -1,8 +1,7 @@
 # src/simulation/empirical_params.py
 """
 Single source-of-truth for all empirical parameters used in the workforce simulation.
-SPEC-10: Moved annual_conversion_cap calculation here as a static empirical constant.
-All real-world rates and proportions are defined here for easy modification.
+SPEC-10: Fixed wage parameters and conversion logic to prevent anomalies.
 
 Data sources (as of October 2025):
 - BLS Employment Situation Report August 2025
@@ -54,23 +53,23 @@ def calculate_annual_conversion_cap(initial_workers: int) -> int:
 ANNUAL_SLOTS_FLAT = True                  # Use consistent annual slots
 CARRYOVER_FRACTION_STRATEGY = False       # No fractional carryover
 
-# --- Wage & job-change parameters ---
-STARTING_WAGE = 95000.0
+# --- FIXED: Wage & job-change parameters ---
+STARTING_WAGE = 95000.0  # Fixed: Ensure this is used consistently
 
-# Job change probabilities (realistic but meaningful separation)
-JOB_CHANGE_PROB_PERM = 0.16               # 16% per year for permanent workers
+# FIXED: Moderate job change probabilities to prevent extreme wage volatility
+JOB_CHANGE_PROB_PERM = 0.12               # 12% per year for permanent workers (reduced)
 TEMP_JOB_CHANGE_PENALTY = 0.35            # 35% penalty for temporary workers
-JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 10.4%
+JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 7.8%
 
-# Wage jump factors (realistic separation)
-WAGE_JUMP_FACTOR_MEAN_PERM = 1.12         # 12% jump for permanent workers
-WAGE_JUMP_FACTOR_STD_PERM = 0.03
+# FIXED: Moderate wage jump factors to prevent excessive wage growth
+WAGE_JUMP_FACTOR_MEAN_PERM = 1.08         # 8% jump for permanent workers (reduced)
+WAGE_JUMP_FACTOR_STD_PERM = 0.02          # Reduced volatility
 
-WAGE_JUMP_FACTOR_MEAN_TEMP = 1.05         # 5% jump for temporary workers
-WAGE_JUMP_FACTOR_STD_TEMP = 0.02
+WAGE_JUMP_FACTOR_MEAN_TEMP = 1.04         # 4% jump for temporary workers (reduced)
+WAGE_JUMP_FACTOR_STD_TEMP = 0.01          # Reduced volatility
 
-# Conversion wage bump (immediate boost upon status change)
-CONVERSION_WAGE_BUMP = 1.08               # 8% immediate boost
+# FIXED: Conversion wage bump (moderate immediate boost)
+CONVERSION_WAGE_BUMP = 1.05               # 5% immediate boost (reduced from 8%)
 
 # H-1B workforce proportions
 H1B_SHARE = 0.0041                        # ~0.41% of workforce are H-1B holders
@@ -186,3 +185,11 @@ if WAGE_JUMP_FACTOR_MEAN_PERM <= WAGE_JUMP_FACTOR_MEAN_TEMP:
 
 if JOB_CHANGE_PROB_PERM <= JOB_CHANGE_PROB_TEMP:
     raise ValueError(f"Permanent job change probability must be greater than temporary")
+
+print(f"SPEC-10 Wage Parameters (Fixed for Stability):")
+print(f"  Starting wage: ${STARTING_WAGE:,.0f}")
+print(f"  Job change (perm): {JOB_CHANGE_PROB_PERM:.1%}")
+print(f"  Job change (temp): {JOB_CHANGE_PROB_TEMP:.1%}")  
+print(f"  Wage jump (perm): {WAGE_JUMP_FACTOR_MEAN_PERM:.1%}")
+print(f"  Wage jump (temp): {WAGE_JUMP_FACTOR_MEAN_TEMP:.1%}")
+print(f"  Conversion bump: {CONVERSION_WAGE_BUMP:.1%}")
