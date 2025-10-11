@@ -26,6 +26,26 @@ def compute_annual_slots_flat(initial_workers: int,
     """
     return calculate_annual_conversion_cap(initial_workers)
 
+def compute_slots_sequence_with_carryover(initial_workers: int,
+                          years: int,
+                          green_card_cap_abs: int = GREEN_CARD_CAP_ABS,
+                          real_us_workforce_size: int = REAL_US_WORKFORCE_SIZE) -> List[int]:
+    """
+    Calculate slots sequence with fractional carryover.
+    SPEC-10: Kept for backward compatibility but delegates to empirical calculation.
+    """
+    annual_float = initial_workers * (green_card_cap_abs / real_us_workforce_size)
+    base = math.floor(annual_float)
+    frac = annual_float - base
+    sequence = []
+    cumulative = 0.0
+    for _ in range(years):
+        cumulative += frac
+        extra = int(math.floor(cumulative))
+        sequence.append(base + extra)
+        cumulative -= extra
+    return sequence
+
 def calculate_compound_growth(initial_value: float, rate: float, periods: int) -> int:
     """
     Calculate compound growth over multiple periods.
@@ -36,6 +56,17 @@ def calculate_compound_growth(initial_value: float, rate: float, periods: int) -
     
     result = initial_value * ((1 + rate) ** periods)
     return int(round(result))
+
+def calculate_compound_growth_series(initial_value: float, rate: float, periods: int) -> List[float]:
+    """Calculate compound growth series over multiple periods."""
+    series = [initial_value]
+    current_value = initial_value
+    
+    for _ in range(periods):
+        current_value *= (1 + rate)
+        series.append(current_value)
+    
+    return series
 
 def save_backlog_analysis(backlog_analysis: BacklogAnalysis, filepath: str) -> None:
     """Save backlog analysis to CSV file."""
@@ -81,7 +112,7 @@ def save_simulation_results(states: List[SimulationState],
             
             writer = csv.writer(csvfile)
             
-            # Header row
+            # Header row - include nationality data if requested or available
             header = [
                 'year', 'total_workers', 'permanent_workers', 'temporary_workers',
                 'new_permanent', 'new_temporary', 'converted_temps',
@@ -89,11 +120,16 @@ def save_simulation_results(states: List[SimulationState],
                 'total_wage_bill', 'h1b_share', 'permanent_share',
                 'cumulative_conversions', 'annual_conversion_cap'
             ]
+            
+            # Add nationality columns if requested or data exists
+            if include_nationality_columns or any(state.get_top_temporary_nationalities() for state in states):
+                header.extend(['top_temp_nationalities'])
+            
             writer.writerow(header)
             
             # Data rows
             for state in states:
-                writer.writerow([
+                row = [
                     state.year,
                     state.total_workers,
                     state.permanent_workers,
@@ -109,7 +145,15 @@ def save_simulation_results(states: List[SimulationState],
                     round(state.permanent_share, 4),
                     state.cumulative_conversions,
                     state.annual_conversion_cap
-                ])
+                ]
+                
+                # Add nationality data if columns were included
+                if len(header) > 15:  # Has nationality columns
+                    row.extend([
+                        json.dumps(state.get_top_temporary_nationalities())
+                    ])
+                
+                writer.writerow(row)
         
         logger.info(f"Saved simulation results to {output_path}")
         
@@ -152,6 +196,34 @@ def load_simulation_results(input_path: str) -> List[SimulationState]:
         
     except Exception as e:
         logger.error(f"Error loading simulation results: {e}")
+        raise
+
+def save_backlog_comparison_csv(backlog_uncapped: BacklogAnalysis,
+                               backlog_capped: BacklogAnalysis,
+                               output_path: str) -> None:
+    """Save backlog comparison to CSV file."""
+    try:
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Get all nationalities from both scenarios
+        all_nationalities = set(backlog_uncapped.get_backlog_by_country().keys()) | \
+                           set(backlog_capped.get_backlog_by_country().keys())
+        
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(['nationality', 'backlog_capped', 'backlog_uncapped'])
+            
+            # Sort nationalities for deterministic output
+            for nationality in sorted(all_nationalities):
+                capped_size = backlog_capped.get_backlog_by_country().get(nationality, 0)
+                uncapped_size = backlog_uncapped.get_backlog_by_country().get(nationality, 0)
+                writer.writerow([nationality, capped_size, uncapped_size])
+        
+        logger.info(f"Saved backlog comparison to {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Error saving backlog comparison: {e}")
         raise
 
 def validate_configuration(config: SimulationConfig) -> List[str]:
@@ -205,6 +277,20 @@ def format_percentage(value: float, precision: Optional[int] = None) -> str:
     format_str = f"{{:.{precision}%}}"
     return format_str.format(value)
 
+def compound_growth(initial_value: float, rate: float, periods: int) -> float:
+    """
+    Calculate compound growth (alias for calculate_compound_growth).
+    
+    Args:
+        initial_value: Starting value
+        rate: Growth rate per period (as decimal)
+        periods: Number of periods
+        
+    Returns:
+        Final value after compound growth
+    """
+    return calculate_compound_growth(initial_value, rate, periods)
+
 def analyze_conversion_queue_efficiency(states: List[SimulationState]) -> Dict[str, Any]:
     """
     Analyze conversion queue efficiency.
@@ -220,11 +306,18 @@ def analyze_conversion_queue_efficiency(states: List[SimulationState]) -> Dict[s
         
         efficiency = total_conversions / theoretical_max if theoretical_max > 0 else 0.0
         
+        # Calculate average queue size (approximate)
+        avg_queue_size = sum(state.temporary_workers for state in states) / len(states)
+        final_queue_size = states[-1].temporary_workers if states else 0
+        
         return {
             'total_conversions': total_conversions,
             'theoretical_maximum': theoretical_max,
             'efficiency': efficiency,
             'years_simulated': years_simulated,
+            'average_queue_size': avg_queue_size,
+            'final_queue_size': final_queue_size,
+            'final_total_backlog': final_queue_size  # Alias for compatibility
         }
         
     except Exception as e:
@@ -256,6 +349,48 @@ def export_country_cap_analysis(states: List[SimulationState], output_path: str)
         logger.error(f"Error exporting country cap analysis: {e}")
         raise
 
+def print_simulation_results(simulation):
+    """Print summary of simulation results."""
+    if not simulation.states:
+        print("No simulation results to display")
+        return
+    
+    initial_state = simulation.states[0]
+    final_state = simulation.states[-1]
+    
+    print("\n" + "="*60)
+    print("SIMULATION RESULTS SUMMARY")
+    print("="*60)
+    
+    # Basic statistics
+    print(f"Years simulated: {len(simulation.states) - 1}")
+    print(f"Total workers: {initial_state.total_workers:,} → {final_state.total_workers:,}")
+    print(f"Growth: {final_state.total_workers - initial_state.total_workers:,} workers")
+    
+    # H-1B share
+    print(f"H-1B share: {initial_state.h1b_share:.2%} → {final_state.h1b_share:.2%}")
+    
+    # Wage statistics
+    print(f"Average wage: ${initial_state.avg_wage_total:,.0f} → ${final_state.avg_wage_total:,.0f}")
+    if final_state.avg_wage_permanent > 0 and final_state.avg_wage_temporary > 0:
+        print(f"  Permanent: ${final_state.avg_wage_permanent:,.0f}")
+        print(f"  Temporary: ${final_state.avg_wage_temporary:,.0f}")
+        wage_diff = final_state.avg_wage_permanent - final_state.avg_wage_temporary
+        print(f"  Wage gap: ${wage_diff:,.0f}")
+    
+    # Conversions
+    total_conversions = sum(state.converted_temps for state in simulation.states[1:])
+    print(f"Total conversions: {total_conversions:,}")
+    
+    if hasattr(simulation, 'annual_sim_cap'):
+        print(f"Annual conversion slots (flat): {simulation.annual_sim_cap}")
+    elif hasattr(simulation, 'slots_sequence'):
+        print(f"Slots sequence: {simulation.slots_sequence}")
+    
+    print(f"Per-country cap: {'ENABLED' if simulation.country_cap_enabled else 'DISABLED'}")
+    
+    print("="*60)
+
 def ensure_output_directory(output_dir: str) -> Path:
     """Ensure output directory exists."""
     output_path = Path(output_dir)
@@ -273,4 +408,80 @@ def safe_file_write(filepath: str, content: str, encoding: str = 'utf-8') -> boo
         logger.error(f"Error writing file {filepath}: {e}")
         return False
 
-# SPEC-10: Removed redundant validation functions (validate impossible conditions
+def safe_json_dump(data: Any, filepath: str, **kwargs) -> bool:
+    """Safely dump data to JSON file with error handling."""
+    try:
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, **kwargs)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing JSON file {filepath}: {e}")
+        return False
+
+# SPEC-10: Validation helpers for flat conversions
+def validate_flat_conversions(states: List[SimulationState], tolerance: int = 1) -> bool:
+    """Validate that annual conversions are flat (constant) across years."""
+    if len(states) < 3:  # Need at least 2 conversion years
+        return True
+    
+    conversion_counts = [state.converted_temps for state in states[1:]]  # Skip initial state
+    
+    # Check first few years (before potential queue exhaustion)
+    check_years = min(5, len(conversion_counts))
+    first_few = conversion_counts[:check_years]
+    
+    if not first_few:
+        return True
+    
+    first_count = first_few[0]
+    for count in first_few:
+        if abs(count - first_count) > tolerance:
+            logger.warning(f"Conversion flatness violated: expected ~{first_count}, got {count}")
+            return False
+    
+    return True
+
+def validate_wage_divergence(states_uncapped: List[SimulationState], 
+                           states_capped: List[SimulationState],
+                           min_difference: float = 500.0) -> bool:
+    """Validate that uncapped scenario produces higher wages than capped scenario."""
+    if not states_uncapped or not states_capped:
+        return False
+    
+    final_wage_uncapped = states_uncapped[-1].avg_wage_total
+    final_wage_capped = states_capped[-1].avg_wage_total
+    
+    wage_difference = final_wage_uncapped - final_wage_capped
+    
+    if wage_difference < min_difference:
+        logger.warning(f"Wage divergence insufficient: {wage_difference:.0f} < {min_difference:.0f}")
+        return False
+    
+    return True
+
+# Module exports for test compatibility
+__all__ = [
+    'compute_annual_slots_flat',
+    'compute_slots_sequence_with_carryover',
+    'calculate_compound_growth',
+    'calculate_compound_growth_series',
+    'save_backlog_analysis',
+    'load_backlog_analysis',
+    'save_simulation_results',
+    'load_simulation_results',
+    'save_backlog_comparison_csv',
+    'validate_configuration',
+    'format_currency',
+    'format_number',
+    'format_percentage',
+    'compound_growth',
+    'export_country_cap_analysis',
+    'analyze_conversion_queue_efficiency',
+    'print_simulation_results',
+    'ensure_output_directory',
+    'safe_file_write',
+    'safe_json_dump',
+    'validate_flat_conversions',
+    'validate_wage_divergence'
+]

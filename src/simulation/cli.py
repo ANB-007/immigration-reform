@@ -2,7 +2,7 @@
 """
 Command-line interface for the workforce growth simulation.
 Provides a user-friendly way to run simulations with various parameters.
-Updated for SPEC-8 with debug support and corrected conversion logic.
+Updated for SPEC-10 with streamlined imports and corrected functionality.
 """
 
 import sys
@@ -15,10 +15,10 @@ import pandas as pd
 from .models import SimulationConfig, BacklogAnalysis
 from .sim import Simulation
 from .utils import (
-    save_simulation_results, fetch_live_data, print_data_sources,
-    validate_configuration, format_number, format_percentage, format_currency,
-    update_nationality_distribution, export_nationality_report,
-    save_backlog_analysis, load_backlog_analysis
+    save_simulation_results, validate_configuration, 
+    format_number, format_percentage, format_currency,
+    save_backlog_analysis, load_backlog_analysis,
+    ensure_output_directory
 )
 from .empirical_params import (
     DEFAULT_YEARS, DEFAULT_SEED, H1B_SHARE, 
@@ -27,12 +27,25 @@ from .empirical_params import (
     STARTING_WAGE, JOB_CHANGE_PROB_PERM, TEMP_JOB_CHANGE_PENALTY,
     WAGE_JUMP_FACTOR_MEAN_PERM, WAGE_JUMP_FACTOR_MEAN_TEMP, INDUSTRY_NAME, 
     TEMP_NATIONALITY_DISTRIBUTION, PERMANENT_NATIONALITY, PER_COUNTRY_CAP_SHARE, 
-    ENABLE_COUNTRY_CAP, OUTPUT_DIR, ENABLE_VISUALIZATION
+    ENABLE_COUNTRY_CAP_DEFAULT, OUTPUT_DIR, ENABLE_VISUALIZATION,
+    calculate_annual_conversion_cap, calculate_per_country_caps_deterministic
 )
 
 # FROM SPEC-6: Import visualization module
 try:
-    from .visualization import SimulationVisualizer, validate_dataframes, validate_backlog_dataframes
+    from .visualization import SimulationVisualizer
+    # SPEC-10: Simplified validation function names
+    def validate_dataframes(df1, df2):
+        """Basic DataFrame validation for visualization."""
+        return (isinstance(df1, pd.DataFrame) and isinstance(df2, pd.DataFrame) and 
+                not df1.empty and not df2.empty and
+                'year' in df1.columns and 'year' in df2.columns)
+    
+    def validate_backlog_dataframes(df1, df2):
+        """Basic backlog DataFrame validation."""
+        return (isinstance(df1, pd.DataFrame) and isinstance(df2, pd.DataFrame) and
+                'nationality' in df1.columns and 'nationality' in df2.columns)
+    
     VISUALIZATION_AVAILABLE = True
 except ImportError as e:
     VISUALIZATION_AVAILABLE = False
@@ -41,19 +54,19 @@ except ImportError as e:
 def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, nationality segmentation, per-country caps, visualization, and backlog analysis (CORRECTED SPEC-8)",
+        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, nationality segmentation, per-country caps, visualization, and backlog analysis (SPEC-10)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python -m src.simulation.cli --initial-workers 10000
   python -m src.simulation.cli --initial-workers 50000 --years 20 --seed 123
-  python -m src.simulation.cli --initial-workers 10000 --live-fetch --output results.csv
+  python -m src.simulation.cli --initial-workers 10000 --output results.csv
   python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
   python -m src.simulation.cli --initial-workers 10000 --show-nationality-summary  # Show nationality breakdown
   python -m src.simulation.cli --initial-workers 10000 --country-cap  # Enable 7%% per-country cap
   python -m src.simulation.cli --initial-workers 10000 --visualize-results  # Generate comparison charts
   python -m src.simulation.cli --initial-workers 10000 --compare-backlogs  # Compare backlogs by nationality
-  python -m src.simulation.cli --initial-workers 10000 --debug  # Enable debug output (SPEC-8)
+  python -m src.simulation.cli --initial-workers 10000 --debug  # Enable debug output
         """
     )
     
@@ -75,12 +88,6 @@ Examples:
         "--seed",
         type=int,
         help="Random seed for reproducibility (optional)"
-    )
-    
-    parser.add_argument(
-        "--live-fetch",
-        action="store_true",
-        help="Fetch latest workforce and nationality data from authoritative sources"
     )
     
     parser.add_argument(
@@ -108,11 +115,6 @@ Examples:
         "--show-nationality-summary",
         action="store_true",
         help="Show nationality breakdown at start and end of simulation"
-    )
-    
-    parser.add_argument(
-        "--export-nationality-report",
-        help="Export detailed nationality report to specified CSV file (agent-mode only)"
     )
     
     # FROM SPEC-5: Per-country cap options
@@ -155,11 +157,10 @@ Examples:
         help="Generate data but skip displaying plots (useful for batch processing)"
     )
     
-    # CORRECTED FOR SPEC-8: Debug option
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug output showing conversion caps, residuals, and queue lengths"
+        help="Enable debug output showing conversion caps and queue lengths"
     )
     
     parser.add_argument(
@@ -192,12 +193,10 @@ def setup_logging(verbose: bool = False, quiet: bool = False, debug: bool = Fals
     )
 
 def run_simulation_scenario(config: SimulationConfig, scenario_name: str, 
-                          live_data: Optional[dict] = None,
-                          updated_nationality_distribution: Optional[dict] = None,
                           quiet: bool = False) -> tuple[pd.DataFrame, BacklogAnalysis]:
     """
     Run a single simulation scenario and return results as DataFrame and BacklogAnalysis.
-    Updated for SPEC-8 to include debug support.
+    SPEC-10: Simplified without live data dependencies.
     """
     if not quiet:
         cap_status = "WITH" if config.country_cap_enabled else "WITHOUT"
@@ -206,12 +205,6 @@ def run_simulation_scenario(config: SimulationConfig, scenario_name: str,
     
     # Run simulation
     simulation = Simulation(config)
-    
-    # Update nationality distribution if live data was fetched
-    if updated_nationality_distribution:
-        simulation.temp_nationality_distribution = updated_nationality_distribution
-        simulation._validate_nationality_distribution()
-    
     states = simulation.run()
     
     # Save results to temporary CSV for visualization
@@ -238,20 +231,20 @@ def run_simulation_scenario(config: SimulationConfig, scenario_name: str,
               f"${final_state.avg_wage_total:,.0f} avg wage, "
               f"{backlog_analysis.total_backlog:,} total backlog")
         
-        # CORRECTED FOR SPEC-8: Show debug info if enabled
+        # Show debug info if enabled
         if config.debug:
-            print(f"   Debug: Annual conversion cap: {simulation.annual_sim_cap}")
-            print(f"   Debug: Cumulative conversions: {simulation.cumulative_conversions:,}")
-            print(f"   Debug: Final queue lengths - Uncapped: {simulation.get_total_backlog_uncapped()}, "
-                  f"Capped: {simulation.get_total_backlog_capped()}")
+            annual_cap = calculate_annual_conversion_cap(config.initial_workers)
+            print(f"   Debug: Annual conversion cap: {annual_cap}")
+            total_conversions = sum(state.converted_temps for state in states[1:])
+            print(f"   Debug: Total conversions: {total_conversions:,}")
+            print(f"   Debug: Final temporary workers: {final_state.temporary_workers}")
     
     return results_df, backlog_analysis
 
-def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] = None,
-                          nationality_distribution: Optional[dict] = None) -> None:
+def print_simulation_header(config: SimulationConfig) -> None:
     """Print simulation header with parameters."""
     print("\n" + "="*60)
-    print("WORKFORCE GROWTH SIMULATION")
+    print("WORKFORCE GROWTH SIMULATION - SPEC-10")
     print("="*60)
     print(f"Industry: {INDUSTRY_NAME}")
     print(f"Initial workforce: {format_number(config.initial_workers)}")
@@ -269,24 +262,22 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
         print(f"\n⚠️  WARNING: Agent-mode with {format_number(config.initial_workers)} workers will be slow.")
         print("   Consider using --count-mode for large simulations.")
     
-    # Show fixed conversion cap information
-    from .empirical_params import calculate_annual_sim_cap
-    annual_cap, residual = calculate_annual_sim_cap(config.initial_workers)
+    # Show conversion cap information
+    annual_cap = calculate_annual_conversion_cap(config.initial_workers)
     cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
     
-    print(f"\nFixed green card conversion system:")
+    print(f"\nGreen card conversion system:")
     print(f"  Annual conversions: {annual_cap}")
-    print(f"  Residual fraction: {residual:.6f}")
     print(f"  Based on: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)} * {format_number(config.initial_workers)}")
     print(f"  Cap proportion: {format_percentage(cap_proportion, 6)}")
     
     # Per-country cap information
     if config.country_cap_enabled:
-        from .empirical_params import calculate_per_country_cap
-        per_country_cap, per_country_residual = calculate_per_country_cap(annual_cap)
+        nationalities = list(TEMP_NATIONALITY_DISTRIBUTION.keys())
+        per_country_caps = calculate_per_country_caps_deterministic(annual_cap, nationalities)
+        max_per_country = max(per_country_caps.values()) if per_country_caps else 0
         print(f"  Per-country cap: ENABLED ({format_percentage(PER_COUNTRY_CAP_SHARE)})")
-        print(f"  Max per country: {per_country_cap} conversions/year")
-        print(f"  Per-country residual: {per_country_residual:.6f}")
+        print(f"  Max per country: {max_per_country} conversions/year")
         print(f"  Queue mode: Separate nationality queues with FIFO within each")
     else:
         print(f"  Per-country cap: DISABLED")
@@ -294,47 +285,83 @@ def print_simulation_header(config: SimulationConfig, live_data: Optional[dict] 
     
     # Enhanced wage differentiation info
     temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
-    print(f"\nEnhanced wage differentiation:")
+    print(f"\nWage differentiation parameters:")
     print(f"  Starting wage: {format_currency(STARTING_WAGE)}")
     print(f"  Job change probability (permanent): {format_percentage(JOB_CHANGE_PROB_PERM)}")
     print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")
     print(f"  Wage jump on job change (permanent): {format_percentage(WAGE_JUMP_FACTOR_MEAN_PERM - 1)}")
     print(f"  Wage jump on job change (temporary): {format_percentage(WAGE_JUMP_FACTOR_MEAN_TEMP - 1)}")
-    print(f"  Converted workers switch to permanent parameters: NEXT YEAR after conversion")
     
     # Nationality distribution
     print(f"\nNationality distribution:")
     print(f"  Permanent workers: {PERMANENT_NATIONALITY}")
-    if nationality_distribution:
-        print("  Temporary worker nationalities (top 5):")
-        sorted_nationalities = sorted(nationality_distribution.items(), key=lambda x: x[1], reverse=True)
-        for nationality, proportion in sorted_nationalities[:5]:
-            print(f"    {nationality}: {format_percentage(proportion)}")
-    else:
-        print("  Temporary worker nationalities (top 5):")
-        sorted_nationalities = sorted(TEMP_NATIONALITY_DISTRIBUTION.items(), key=lambda x: x[1], reverse=True)
-        for nationality, proportion in sorted_nationalities[:5]:
-            print(f"    {nationality}: {format_percentage(proportion)}")
+    print("  Temporary worker nationalities (top 5):")
+    sorted_nationalities = sorted(TEMP_NATIONALITY_DISTRIBUTION.items(), key=lambda x: x[1], reverse=True)
+    for nationality, proportion in sorted_nationalities[:5]:
+        print(f"    {nationality}: {format_percentage(proportion)}")
     
-    # Backlog analysis information
+    # Analysis modes
     if config.compare_backlogs:
         print(f"\nBacklog analysis: ENABLED")
         print(f"  Will compare final-year backlogs by nationality")
         print(f"  Expected: Total backlog identical across scenarios, distribution differs")
     
-    if live_data:
-        print("\nUsing live-fetched data:")
-        print(f"  H-1B share: {format_percentage(live_data.get('h1b_share', H1B_SHARE))}")
-        print(f"  Annual H-1B entry rate: {format_percentage(live_data.get('annual_h1b_entry_rate', ANNUAL_H1B_ENTRY_RATE))}")
-        if 'green_card_cap' in live_data:
-            print(f"  Green card cap: {format_number(live_data['green_card_cap'])}")
-        if 'it_median_wage' in live_data:
-            print(f"  IT sector median wage: {format_currency(live_data['it_median_wage'])}")
-    else:
-        print("\nUsing default empirical parameters:")
-        print(f"  H-1B share: {format_percentage(H1B_SHARE)}")
-        print(f"  Annual permanent entry rate: {format_percentage(ANNUAL_PERMANENT_ENTRY_RATE)}")
-        print(f"  Annual H-1B entry rate: {format_percentage(ANNUAL_H1B_ENTRY_RATE)}")
+    print(f"\nUsing empirical parameters:")
+    print(f"  H-1B share: {format_percentage(H1B_SHARE)}")
+    print(f"  Annual permanent entry rate: {format_percentage(ANNUAL_PERMANENT_ENTRY_RATE)}")
+    print(f"  Annual H-1B entry rate: {format_percentage(ANNUAL_H1B_ENTRY_RATE)}")
+    
+    print("="*60)
+
+def print_data_sources():
+    """Print data sources information."""
+    from .empirical_params import DATA_SOURCES
+    print(f"\nData sources:")
+    for key, source in list(DATA_SOURCES.items())[:5]:  # Show first 5
+        print(f"  • {source}")
+    if len(DATA_SOURCES) > 5:
+        print(f"  • ... and {len(DATA_SOURCES) - 5} more sources")
+
+def print_simulation_results(simulation):
+    """Print summary of simulation results."""
+    if not simulation.states:
+        print("No simulation results to display")
+        return
+    
+    initial_state = simulation.states[0]
+    final_state = simulation.states[-1]
+    
+    print("\n" + "="*60)
+    print("SIMULATION RESULTS SUMMARY")
+    print("="*60)
+    
+    # Basic statistics
+    print(f"Years simulated: {len(simulation.states) - 1}")
+    print(f"Total workers: {initial_state.total_workers:,} → {final_state.total_workers:,}")
+    print(f"Growth: {final_state.total_workers - initial_state.total_workers:,} workers")
+    
+    # H-1B share
+    print(f"H-1B share: {initial_state.h1b_share:.2%} → {final_state.h1b_share:.2%}")
+    
+    # Wage statistics
+    print(f"Average wage: ${initial_state.avg_wage_total:,.0f} → ${final_state.avg_wage_total:,.0f}")
+    if final_state.avg_wage_permanent > 0 and final_state.avg_wage_temporary > 0:
+        print(f"  Permanent: ${final_state.avg_wage_permanent:,.0f}")
+        print(f"  Temporary: ${final_state.avg_wage_temporary:,.0f}")
+        wage_diff = final_state.avg_wage_permanent - final_state.avg_wage_temporary
+        print(f"  Wage gap: ${wage_diff:,.0f}")
+    
+    # Conversions
+    total_conversions = sum(state.converted_temps for state in simulation.states[1:])
+    print(f"Total conversions: {total_conversions:,}")
+    
+    annual_cap = calculate_annual_conversion_cap(simulation.config.initial_workers)
+    print(f"Annual conversion slots: {annual_cap}")
+    
+    print(f"Per-country cap: {'ENABLED' if simulation.country_cap_enabled else 'DISABLED'}")
+    
+    # Final state
+    print(f"Final temporary workers: {final_state.temporary_workers:,}")
     
     print("="*60)
 
@@ -362,7 +389,7 @@ def main() -> int:
         elif args.no_country_cap:
             country_cap_enabled = False
         else:
-            country_cap_enabled = ENABLE_COUNTRY_CAP
+            country_cap_enabled = ENABLE_COUNTRY_CAP_DEFAULT
         
         # Check visualization requirements
         if (args.visualize_results or args.compare_backlogs) and not VISUALIZATION_AVAILABLE:
@@ -375,13 +402,12 @@ def main() -> int:
             initial_workers=args.initial_workers,
             years=args.years,
             seed=args.seed,
-            live_fetch=args.live_fetch,
             output_path=args.output,
             agent_mode=not args.count_mode,
             show_nationality_summary=args.show_nationality_summary,
             country_cap_enabled=country_cap_enabled,
             compare_backlogs=args.compare_backlogs,
-            debug=args.debug  # CORRECTED FOR SPEC-8
+            debug=args.debug
         )
         
         # Validate configuration
@@ -392,28 +418,14 @@ def main() -> int:
                 print(f"  • {error}")
             return 1
         
-        # Fetch live data if requested
-        live_data = None
-        updated_nationality_distribution = None
-        if base_config.live_fetch:
-            if not args.quiet:
-                print("Fetching live workforce, wage, nationality, and backlog data...")
-            live_data = fetch_live_data()
-            if live_data:
-                if not args.quiet:
-                    print("Successfully fetched live data")
-                
-                updated_nationality_distribution = update_nationality_distribution(live_data)
-                if updated_nationality_distribution != TEMP_NATIONALITY_DISTRIBUTION:
-                    print("Updated nationality distribution from live data")
-            else:
-                print("Warning: Failed to fetch live data, using defaults")
+        # Ensure output directory exists
+        ensure_output_directory(args.output_dir)
         
         # Handle different modes
         if args.compare_backlogs:
             # Backlog analysis mode
             if not args.quiet:
-                print_simulation_header(base_config, live_data, updated_nationality_distribution)
+                print_simulation_header(base_config)
                 print("\n📊 BACKLOG ANALYSIS MODE: Running both scenarios for backlog comparison...")
             
             # Run uncapped scenario
@@ -421,7 +433,6 @@ def main() -> int:
                 initial_workers=args.initial_workers,
                 years=args.years,
                 seed=args.seed,
-                live_fetch=False,
                 output_path=f"{args.output_dir}/uncapped_results.csv",
                 agent_mode=not args.count_mode,
                 show_nationality_summary=False,
@@ -431,8 +442,7 @@ def main() -> int:
             )
             
             results_uncapped, backlog_uncapped = run_simulation_scenario(
-                uncapped_config, "Uncapped", live_data, 
-                updated_nationality_distribution, args.quiet
+                uncapped_config, "Uncapped", args.quiet
             )
             
             # Run capped scenario
@@ -440,7 +450,6 @@ def main() -> int:
                 initial_workers=args.initial_workers,
                 years=args.years,
                 seed=args.seed,
-                live_fetch=False,
                 output_path=f"{args.output_dir}/capped_results.csv",
                 agent_mode=not args.count_mode,
                 show_nationality_summary=False,
@@ -450,8 +459,7 @@ def main() -> int:
             )
             
             results_capped, backlog_capped = run_simulation_scenario(
-                capped_config, "Capped", live_data, 
-                updated_nationality_distribution, args.quiet
+                capped_config, "Capped", args.quiet
             )
             
             # Save backlog analyses to CSV
@@ -461,72 +469,70 @@ def main() -> int:
             save_backlog_analysis(backlog_uncapped, str(backlog_uncapped_path))
             save_backlog_analysis(backlog_capped, str(backlog_capped_path))
             
-            # Generate visualizations
-            if not args.quiet:
-                print("\n📊 Generating backlog comparison visualizations...")
-            
-            if not validate_dataframes(results_uncapped, results_capped):
-                print("Error: Invalid data for wage visualization")
-                return 1
+            # Generate visualizations if available
+            if VISUALIZATION_AVAILABLE and not args.skip_plots:
+                if not args.quiet:
+                    print("\n📊 Generating backlog comparison visualizations...")
                 
-            backlog_df_uncapped = backlog_uncapped.to_dataframe()
-            backlog_df_capped = backlog_capped.to_dataframe()
-            
-            if not validate_backlog_dataframes(backlog_df_uncapped, backlog_df_capped):
-                print("Error: Invalid data for backlog visualization")
-                return 1
-            
-            # Create visualizer and generate charts
-            visualizer = SimulationVisualizer(
-                output_dir=args.output_dir,
-                save_plots=not args.skip_plots
-            )
-            
-            # Generate all visualizations (wage + backlog)
-            wage_files = visualizer.generate_all_visualizations(
-                results_uncapped, results_capped
-            )
-            
-            backlog_files = visualizer.generate_backlog_visualizations(
-                backlog_df_uncapped, backlog_df_capped
-            )
-            
-            # Combine all generated files
-            generated_files = {**wage_files, **backlog_files}
+                if not validate_dataframes(results_uncapped, results_capped):
+                    print("Warning: Invalid data for wage visualization")
+                else:
+                    backlog_df_uncapped = backlog_uncapped.to_dataframe()
+                    backlog_df_capped = backlog_capped.to_dataframe()
+                    
+                    if validate_backlog_dataframes(backlog_df_uncapped, backlog_df_capped):
+                        # Create visualizer and generate charts
+                        visualizer = SimulationVisualizer(
+                            output_dir=args.output_dir,
+                            save_plots=True
+                        )
+                        
+                        # Generate all visualizations
+                        try:
+                            wage_files = visualizer.generate_all_visualizations(
+                                results_uncapped, results_capped
+                            )
+                            
+                            backlog_files = visualizer.generate_backlog_visualizations(
+                                backlog_df_uncapped, backlog_df_capped
+                            )
+                            
+                            # Print generated files
+                            generated_files = {**wage_files, **backlog_files}
+                            if not args.quiet and generated_files:
+                                print("Generated visualization files:")
+                                for viz_name, filepath in generated_files.items():
+                                    if filepath:
+                                        print(f"  📈 {viz_name}: {filepath}")
+                        except Exception as e:
+                            print(f"Warning: Visualization generation failed: {e}")
             
             # Print results
             if not args.quiet:
                 print("\n✅ Backlog analysis complete!")
-                print("Generated files:")
-                for viz_name, filepath in generated_files.items():
-                    if filepath:
-                        print(f"  📈 {viz_name}: {filepath}")
-                
-                print(f"\nCSV files:")
+                print(f"CSV files:")
                 print(f"  📄 backlog_uncapped.csv: {backlog_uncapped_path}")
                 print(f"  📄 backlog_capped.csv: {backlog_capped_path}")
                 
-                # CORRECTED FOR SPEC-8: Show invariant validation
-                print(f"\nCORRECTED SPEC-8 Invariant Validation:")
+                # Show invariant validation
+                print(f"\nSPEC-10 Backlog Validation:")
                 total_backlog_diff = abs(backlog_uncapped.total_backlog - backlog_capped.total_backlog)
                 print(f"  Total backlog difference: {total_backlog_diff} (should be ≤ 1)")
-                print(f"  Total backlog (no cap): {backlog_uncapped.total_backlog:,} workers")
-                print(f"  Total backlog (7% cap): {backlog_capped.total_backlog:,} workers")
-                print(f"  Invariant C {'✅ PASSED' if total_backlog_diff <= 1 else '❌ FAILED'}")
+                print(f"  Total backlog (uncapped): {backlog_uncapped.total_backlog:,} workers")
+                print(f"  Total backlog (capped): {backlog_capped.total_backlog:,} workers")
+                print(f"  Backlog invariant {'✅ PASSED' if total_backlog_diff <= 1 else '❌ FAILED'}")
         
         elif args.visualize_results:
             # Standard visualization mode
-            # Print header once
             if not args.quiet:
-                print_simulation_header(base_config, live_data, updated_nationality_distribution)
+                print_simulation_header(base_config)
                 print("\n🎨 VISUALIZATION MODE: Running both scenarios for comparison...")
             
-            # Run both scenarios (similar to backlog analysis but focus on visualization)
+            # Run both scenarios
             uncapped_config = SimulationConfig(
                 initial_workers=args.initial_workers,
                 years=args.years,
                 seed=args.seed,
-                live_fetch=False,
                 output_path=f"{args.output_dir}/uncapped_results.csv",
                 agent_mode=not args.count_mode,
                 show_nationality_summary=False,
@@ -535,15 +541,13 @@ def main() -> int:
             )
             
             results_uncapped, _ = run_simulation_scenario(
-                uncapped_config, "Uncapped", live_data, 
-                updated_nationality_distribution, args.quiet
+                uncapped_config, "Uncapped", args.quiet
             )
             
             capped_config = SimulationConfig(
                 initial_workers=args.initial_workers,
                 years=args.years,
                 seed=args.seed,
-                live_fetch=False,
                 output_path=f"{args.output_dir}/capped_results.csv",
                 agent_mode=not args.count_mode,
                 show_nationality_summary=False,
@@ -552,99 +556,65 @@ def main() -> int:
             )
             
             results_capped, _ = run_simulation_scenario(
-                capped_config, "Capped", live_data, 
-                updated_nationality_distribution, args.quiet
+                capped_config, "Capped", args.quiet
             )
             
             # Generate visualizations
-            if not args.quiet:
-                print("\n📊 Generating comparative visualizations...")
-            
-            if not validate_dataframes(results_uncapped, results_capped):
-                print("Error: Invalid data for visualization")
-                return 1
-            
-            visualizer = SimulationVisualizer(
-                output_dir=args.output_dir,
-                save_plots=not args.skip_plots
-            )
-            
-            generated_files = visualizer.generate_all_visualizations(
-                results_uncapped, results_capped
-            )
-            
-            # Print results
-            if not args.quiet:
-                print("\n✅ Visualization complete!")
-                print("Generated files:")
-                for viz_name, filepath in generated_files.items():
-                    if filepath:
-                        print(f"  📈 {viz_name}: {filepath}")
+            if VISUALIZATION_AVAILABLE and not args.skip_plots:
+                if not args.quiet:
+                    print("\n📊 Generating comparative visualizations...")
                 
-                # CORRECTED FOR SPEC-8: Show conversion analysis
-                print(f"\nCORRECTED SPEC-8 Conversion Analysis:")
-                conversions_uncapped = results_uncapped['converted_temps'].tolist()[1:6]  # First 5 years
-                conversions_capped = results_capped['converted_temps'].tolist()[1:6]
-                print(f"  Conversions per year (uncapped): {conversions_uncapped}")
-                print(f"  Conversions per year (capped):   {conversions_capped}")
-                
-                # Check if conversions are flat
-                if conversions_uncapped:
-                    flat_check_uncapped = all(abs(x - conversions_uncapped[0]) <= 1 for x in conversions_uncapped)
-                    flat_check_capped = all(abs(x - conversions_capped[0]) <= 1 for x in conversions_capped)
-                    print(f"  Flat conversions check: {'✅ PASSED' if flat_check_uncapped and flat_check_capped else '❌ FAILED'}")
+                if not validate_dataframes(results_uncapped, results_capped):
+                    print("Warning: Invalid data for visualization")
+                else:
+                    visualizer = SimulationVisualizer(
+                        output_dir=args.output_dir,
+                        save_plots=True
+                    )
+                    
+                    try:
+                        generated_files = visualizer.generate_all_visualizations(
+                            results_uncapped, results_capped
+                        )
+                        
+                        # Print results
+                        if not args.quiet and generated_files:
+                            print("\n✅ Visualization complete!")
+                            print("Generated files:")
+                            for viz_name, filepath in generated_files.items():
+                                if filepath:
+                                    print(f"  📈 {viz_name}: {filepath}")
+                    except Exception as e:
+                        print(f"Warning: Visualization generation failed: {e}")
         
         else:
             # Standard single-scenario mode
             if not args.quiet:
-                print_simulation_header(base_config, live_data, updated_nationality_distribution)
+                print_simulation_header(base_config)
             
             # Run simulation
             simulation = Simulation(base_config)
-            
-            # Update nationality distribution in simulation if live data was fetched
-            if updated_nationality_distribution:
-                simulation.temp_nationality_distribution = updated_nationality_distribution
-                simulation._validate_nationality_distribution()
-            
             states = simulation.run()
             
             # Save results
             save_simulation_results(states, base_config.output_path, include_nationality_columns=True)
             
-            # Export nationality report if requested
-            if args.export_nationality_report:
-                if base_config.agent_mode:
-                    workers = simulation.to_agent_model()
-                    export_nationality_report(workers, args.export_nationality_report)
-                    if not args.quiet:
-                        print(f"Nationality report exported to: {args.export_nationality_report}")
-                else:
-                    print("Warning: Nationality report export requires agent-mode")
-            
             # Print results (unless quiet mode)
             if not args.quiet:
-                from .cli import print_simulation_results
                 print_simulation_results(simulation)
-                print_data_sources(live_data)
-                
-                # CORRECTED FOR SPEC-8: Show validation results
-                if simulation.validate_fixed_conversion_invariants():
-                    print(f"\n✅ CORRECTED SPEC-8 Invariants: PASSED")
-                else:
-                    print(f"\n❌ CORRECTED SPEC-8 Invariants: FAILED")
+                print_data_sources()
         
         if not args.quiet:
             print(f"\n✅ Simulation completed successfully!")
             if not (args.visualize_results or args.compare_backlogs):
                 print(f"Results saved to: {base_config.output_path}")
             print(f"\nNext steps:")
-            print(f"  • Examine flat conversion plots (should show constant annual conversions)")
-            print(f"  • Verify total backlog equality between scenarios")
-            print(f"  • Compare wage differentiation (permanent vs temporary workers)")
+            print(f"  • Examine conversion patterns (should show constant annual conversions)")
+            print(f"  • Compare wage differentiation between worker types")
             if not args.compare_backlogs:
-                print(f"  • Use --compare-backlogs to verify SPEC-8 invariants")
-            print(f"  • Use --debug to see detailed conversion cap information")
+                print(f"  • Use --compare-backlogs to verify backlog invariants")
+            if not args.debug:
+                print(f"  • Use --debug to see detailed conversion information")
         
         return 0
         

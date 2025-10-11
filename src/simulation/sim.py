@@ -2,7 +2,7 @@
 """
 Core simulation engine for workforce growth modeling.
 Handles worker dynamics, green card conversions, and wage tracking.
-CORRECTED FOR SPEC-8: Fixed queue synchronization to ensure invariants hold.
+SPEC-10: Fixed to use empirical parameters and streamlined models.
 """
 
 import logging
@@ -22,7 +22,9 @@ from .empirical_params import (
     WAGE_JUMP_FACTOR_MEAN_PERM, WAGE_JUMP_FACTOR_STD_PERM,
     WAGE_JUMP_FACTOR_MEAN_TEMP, WAGE_JUMP_FACTOR_STD_TEMP,
     TEMP_NATIONALITY_DISTRIBUTION, PERMANENT_NATIONALITY,
-    CARRYOVER_FRACTION_STRATEGY, calculate_annual_sim_cap
+    CARRYOVER_FRACTION_STRATEGY, calculate_annual_conversion_cap,
+    calculate_per_country_caps_deterministic, DEFAULT_SIMULATION_START_YEAR,
+    CONVERSION_WAGE_BUMP
 )
 
 logger = logging.getLogger(__name__)
@@ -30,98 +32,52 @@ logger = logging.getLogger(__name__)
 class Simulation:
     """
     Core simulation engine for workforce growth modeling.
-    CORRECTED FOR SPEC-8 with proper queue synchronization.
+    SPEC-10: Streamlined with empirical parameters and fixed data models.
     """
     
     def __init__(self, config: SimulationConfig):
         """
         Initialize simulation with configuration.
-        CORRECTED FOR SPEC-8: Fixed per-country cap distribution and queue sync.
+        SPEC-10: Fixed to use empirical parameter functions and proper Worker initialization.
         
         Args:
             config: SimulationConfig object with simulation parameters
         """
         self.config = config
-        self.current_year = 2025
+        self.current_year = config.start_year
         self.states: List[SimulationState] = []
         self.workers: List[Worker] = []
         self.next_worker_id = 1
         
-        # CORRECTED FOR SPEC-8: Single RNG for all stochastic operations
+        # SPEC-10: Single RNG for all stochastic operations
         self.rng = np.random.default_rng(config.seed)
         
         # Load nationality distribution
         self.temp_nationality_distribution = TEMP_NATIONALITY_DISTRIBUTION.copy()
         
-        # CORRECTED FOR SPEC-8: Fixed annual conversion cap (calculated once)
-        self.annual_sim_cap, self.residual_fraction = calculate_annual_sim_cap(config.initial_workers)
-        self.cumulative_residual = self.residual_fraction  # Start with initial residual
+        # SPEC-10: Fixed annual conversion cap using empirical function
+        self.annual_sim_cap = calculate_annual_conversion_cap(config.initial_workers)
         
-        logger.info(f"Fixed annual conversion cap: {self.annual_sim_cap}")
-        logger.info(f"Residual fraction: {self.residual_fraction:.6f}")
+        logger.info(f"Annual conversion cap: {self.annual_sim_cap}")
         
-        # CORRECTED FOR SPEC-8: Per-country cap system with proper distribution
+        # SPEC-10: Per-country cap system
         self.country_cap_enabled = config.country_cap_enabled
         if self.country_cap_enabled:
-            # FIXED: Calculate per-country caps that sum exactly to annual_sim_cap
             nationalities = list(self.temp_nationality_distribution.keys())
-            num_countries = len(nationalities)
+            self.per_country_caps = calculate_per_country_caps_deterministic(
+                self.annual_sim_cap, nationalities
+            )
             
-            if self.annual_sim_cap == 0:
-                # Edge case: no conversions available
-                self.per_country_caps = {nationality: 0 for nationality in nationalities}
-            else:
-                # Calculate theoretical per-country allocation (may be fractional)
-                theoretical_per_country = self.annual_sim_cap * PER_COUNTRY_CAP_SHARE
-                
-                if theoretical_per_country < 1.0:
-                    # Very small caps: distribute slots round-robin style
-                    self.per_country_caps = {nationality: 0 for nationality in nationalities}
-                    
-                    # Distribute slots one by one, prioritizing high-demand countries
-                    priority_order = ["India", "China"] + [n for n in nationalities if n not in ["India", "China"]]
-                    slots_to_distribute = self.annual_sim_cap
-                    
-                    for _ in range(slots_to_distribute):
-                        for nationality in priority_order:
-                            if slots_to_distribute > 0:
-                                self.per_country_caps[nationality] += 1
-                                slots_to_distribute -= 1
-                                break
-                else:
-                    # Normal case: each country gets at least some slots
-                    base_per_country = max(0, math.floor(theoretical_per_country))
-                    
-                    # Start with base allocation
-                    self.per_country_caps = {nationality: base_per_country for nationality in nationalities}
-                    
-                    # Calculate remaining slots to distribute
-                    allocated_slots = sum(self.per_country_caps.values())
-                    remaining_slots = self.annual_sim_cap - allocated_slots
-                    
-                    # Distribute remaining slots round-robin, prioritizing high-demand countries
-                    priority_order = ["India", "China"] + [n for n in nationalities if n not in ["India", "China"]]
-                    country_idx = 0
-                    
-                    while remaining_slots > 0:
-                        nationality = priority_order[country_idx % len(priority_order)]
-                        self.per_country_caps[nationality] += 1
-                        remaining_slots -= 1
-                        country_idx += 1
-            
-            # Verify total (this should never fail now)
+            # Verify total
             total_per_country_slots = sum(self.per_country_caps.values())
             assert total_per_country_slots == self.annual_sim_cap, \
                 f"Per-country caps sum to {total_per_country_slots}, expected {self.annual_sim_cap}"
             
             logger.info(f"Per-country caps: {self.per_country_caps}")
-            logger.info(f"Total per-country slots: {total_per_country_slots}")
-            
         else:
             self.per_country_caps = {}
         
-        # CORRECTED FOR SPEC-8: Synchronized queue management
-        # Always maintain both queue structures for consistency
+        # SPEC-10: Synchronized queue management
         self.global_queue = deque()  # FIFO order for uncapped mode
         self.country_queues = {
             nationality: deque() for nationality in self.temp_nationality_distribution.keys()
@@ -147,7 +103,7 @@ class Simulation:
     def _initialize_workforce(self) -> None:
         """
         Initialize the workforce with proper H-1B/permanent split.
-        CORRECTED FOR SPEC-8: Ensures perfect queue synchronization.
+        SPEC-10: Fixed Worker initialization with proper parameters.
         """
         initial_temporary = round(self.config.initial_workers * H1B_SHARE)
         initial_permanent = self.config.initial_workers - initial_temporary
@@ -159,23 +115,22 @@ class Simulation:
                 "Results may show discretization effects."
             )
         
-        # CRITICAL FIX: Create deterministic temporary worker list ONCE
-        # This ensures both queues have identical workers in identical order
+        # SPEC-10: Create deterministic temporary worker list ONCE
         temp_workers_list = []
         
         # Agent-mode: Create individual Worker objects
         if self.config.agent_mode:
-            # Create permanent workers (all U.S. nationals per SPEC-4)
+            # SPEC-10: Fixed Worker initialization with proper parameters
+            # Create permanent workers (all U.S. nationals)
             for i in range(initial_permanent):
                 worker = Worker(
                     id=self.next_worker_id,
                     status=WorkerStatus.PERMANENT,
                     nationality=str(PERMANENT_NATIONALITY),
+                    simulation_start_year=self.current_year,  # SPEC-10: Required parameter
+                    entry_year_offset=0,                      # SPEC-10: Required parameter
                     age=self.rng.integers(25, 65),
-                    wage=STARTING_WAGE,
-                    created_year=self.current_year,
-                    entry_year=self.current_year,
-                    year_joined=self.current_year
+                    wage=STARTING_WAGE
                 )
                 self.workers.append(worker)
                 self.next_worker_id += 1
@@ -187,11 +142,10 @@ class Simulation:
                     id=self.next_worker_id,
                     status=WorkerStatus.TEMPORARY,
                     nationality=str(nationality),
+                    simulation_start_year=self.current_year,  # SPEC-10: Required parameter
+                    entry_year_offset=0,                      # SPEC-10: Required parameter
                     age=self.rng.integers(25, 55),
-                    wage=STARTING_WAGE,
-                    created_year=self.current_year,
-                    entry_year=self.current_year,
-                    year_joined=self.current_year
+                    wage=STARTING_WAGE
                 )
                 self.workers.append(worker)
                 
@@ -200,7 +154,7 @@ class Simulation:
                 temp_workers_list.append(temp_worker)
                 self.next_worker_id += 1
             
-            # Calculate initial statistics
+            # SPEC-10: Calculate initial statistics using WageStatistics.calculate
             wage_stats = WageStatistics.calculate(self.workers)
             nationality_stats = NationalityStatistics.calculate(self.workers)
         else:
@@ -228,36 +182,21 @@ class Simulation:
                     temp_workers_list.append(temp_worker)
                     self.next_worker_id += 1
         
-        # CRITICAL FIX: Add the SAME workers to both queues in the SAME order
-        # This ensures perfect synchronization
+        # SPEC-10: Add the SAME workers to both queues in the SAME order
         for temp_worker in temp_workers_list:
-            # Add to global queue (FIFO order)
             self.global_queue.append(temp_worker)
-            # Add to country-specific queue
             self.country_queues[temp_worker.nationality].append(temp_worker)
         
-        # Initialize per-country conversion statistics
-        initial_conversions = {}
-        initial_backlogs = self._calculate_queue_backlogs()
-        
+        # SPEC-10: Create initial state using new SimulationState with workers list
         initial_state = SimulationState(
             year=self.current_year,
-            total_workers=self.config.initial_workers,
-            permanent_workers=initial_permanent,
-            temporary_workers=initial_temporary,
+            workers=self.workers.copy(),
+            annual_conversion_cap=self.annual_sim_cap,
             new_permanent=0,
             new_temporary=0,
             converted_temps=0,
-            avg_wage_total=wage_stats.avg_wage_total,
-            avg_wage_permanent=wage_stats.avg_wage_permanent,
-            avg_wage_temporary=wage_stats.avg_wage_temporary,
-            total_wage_bill=wage_stats.total_wage_bill,
-            top_temp_nationalities=nationality_stats.get_top_temporary_nationalities(),
-            converted_by_country=initial_conversions,
-            queue_backlog_by_country=initial_backlogs,
-            country_cap_enabled=self.country_cap_enabled,
-            annual_conversion_cap=self.annual_sim_cap,
-            cumulative_conversions=0
+            cumulative_conversions=0,
+            country_cap_enabled=self.country_cap_enabled
         )
         
         self.states.append(initial_state)
@@ -280,7 +219,7 @@ class Simulation:
     def step(self) -> SimulationState:
         """
         Execute one simulation step (one year).
-        CORRECTED FOR SPEC-8 with fixed conversion caps.
+        SPEC-10: Fixed to use proper SimulationState properties.
         
         Returns:
             SimulationState representing the state after this step
@@ -307,23 +246,19 @@ class Simulation:
         # Update cumulative conversions
         self.cumulative_conversions += converted_temps
         
-        # Calculate new totals
-        total_workers = self.states[-1].total_workers + new_permanent + new_temporary
-        permanent_workers = self.states[-1].permanent_workers + new_permanent + converted_temps
-        temporary_workers = total_workers - permanent_workers
+        # SPEC-10: Create new state with updated workers list
+        new_state = SimulationState(
+            year=next_year,
+            workers=self.workers.copy(),
+            annual_conversion_cap=self.annual_sim_cap,
+            new_permanent=new_permanent,
+            new_temporary=new_temporary,
+            converted_temps=converted_temps,
+            cumulative_conversions=self.cumulative_conversions,
+            country_cap_enabled=self.country_cap_enabled
+        )
         
-        # Calculate statistics
-        if self.config.agent_mode:
-            wage_stats = WageStatistics.calculate(self.workers)
-            nationality_stats = NationalityStatistics.calculate(self.workers)
-        else:
-            wage_stats = self._approximate_wage_statistics(total_workers, permanent_workers, temporary_workers)
-            nationality_stats = self._approximate_nationality_statistics(total_workers, permanent_workers, temporary_workers)
-        
-        # Calculate queue backlogs
-        queue_backlogs = self._calculate_queue_backlogs()
-        
-        # CORRECTED FOR SPEC-8: Debug output
+        # SPEC-10: Debug output using properties
         if hasattr(self.config, 'debug') and self.config.debug:
             total_backlog_uncapped = len(self.global_queue)
             total_backlog_capped = sum(len(queue) for queue in self.country_queues.values())
@@ -333,27 +268,6 @@ class Simulation:
             if self.country_cap_enabled:
                 logger.info(f"Per-country conversions: {conversions_by_country}, sum={sum(conversions_by_country.values())}")
         
-        # Create new state
-        new_state = SimulationState(
-            year=next_year,
-            total_workers=total_workers,
-            permanent_workers=permanent_workers,
-            temporary_workers=temporary_workers,
-            new_permanent=new_permanent,
-            new_temporary=new_temporary,
-            converted_temps=converted_temps,
-            avg_wage_total=wage_stats.avg_wage_total,
-            avg_wage_permanent=wage_stats.avg_wage_permanent,
-            avg_wage_temporary=wage_stats.avg_wage_temporary,
-            total_wage_bill=wage_stats.total_wage_bill,
-            top_temp_nationalities=nationality_stats.get_top_temporary_nationalities(),
-            converted_by_country=conversions_by_country,
-            queue_backlog_by_country=queue_backlogs,
-            country_cap_enabled=self.country_cap_enabled,
-            annual_conversion_cap=self.annual_sim_cap,
-            cumulative_conversions=self.cumulative_conversions
-        )
-        
         self.states.append(new_state)
         self.current_year = next_year
         
@@ -362,25 +276,23 @@ class Simulation:
     def _process_agent_mode_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
         """
         Process one simulation step in agent-mode.
-        CORRECTED FOR SPEC-8: Fixed conversions and synchronized queues.
+        SPEC-10: Fixed Worker creation with proper parameters.
         """
-        # 1. Add new permanent workers (all U.S. nationals per SPEC-4)
+        # 1. Add new permanent workers (all U.S. nationals)
         for _ in range(new_permanent):
             worker = Worker(
                 id=self.next_worker_id,
                 status=WorkerStatus.PERMANENT,
                 nationality=str(PERMANENT_NATIONALITY),
+                simulation_start_year=self.config.start_year,  # SPEC-10: Required parameter
+                entry_year_offset=next_year - self.config.start_year,  # SPEC-10: Required parameter  
                 age=self.rng.integers(25, 65),
-                wage=STARTING_WAGE,
-                created_year=next_year,
-                entry_year=next_year,
-                year_joined=next_year
+                wage=STARTING_WAGE
             )
             self.workers.append(worker)
             self.next_worker_id += 1
         
         # 2. Add new temporary workers with nationality distribution
-        # CRITICAL FIX: Create deterministic list first
         new_temp_workers_list = []
         for _ in range(new_temporary):
             nationality = self._sample_nationality(is_temporary=True)
@@ -388,11 +300,10 @@ class Simulation:
                 id=self.next_worker_id,
                 status=WorkerStatus.TEMPORARY,
                 nationality=str(nationality),
+                simulation_start_year=self.config.start_year,  # SPEC-10: Required parameter
+                entry_year_offset=next_year - self.config.start_year,  # SPEC-10: Required parameter
                 age=self.rng.integers(25, 55),
-                wage=STARTING_WAGE,
-                created_year=next_year,
-                entry_year=next_year,
-                year_joined=next_year
+                wage=STARTING_WAGE
             )
             self.workers.append(worker)
             
@@ -400,7 +311,7 @@ class Simulation:
             new_temp_workers_list.append(temp_worker)
             self.next_worker_id += 1
         
-        # CRITICAL FIX: Add new workers to both queues from the SAME list
+        # Add new workers to both queues from the SAME list
         for temp_worker in new_temp_workers_list:
             self.global_queue.append(temp_worker)
             self.country_queues[temp_worker.nationality].append(temp_worker)
@@ -408,7 +319,7 @@ class Simulation:
         # 3. Process job changes and wage updates
         self._process_job_changes(next_year)
         
-        # 4. CORRECTED FOR SPEC-8: Process conversions with fixed caps
+        # 4. Process conversions with fixed caps
         converted_temps, conversions_by_country = self._process_green_card_conversions(next_year)
         
         return converted_temps, conversions_by_country
@@ -416,7 +327,7 @@ class Simulation:
     def _process_job_changes(self, current_year: int) -> None:
         """
         Process job changes and wage updates for all workers.
-        CORRECTED FOR SPEC-8: Status-dependent wage behavior with proper timing.
+        SPEC-10: Fixed with proper conversion wage bump application.
         """
         for worker in self.workers:
             # Determine job change probability and wage parameters based on current status
@@ -452,27 +363,18 @@ class Simulation:
     def _process_green_card_conversions(self, current_year: int) -> Tuple[int, Dict[str, int]]:
         """
         Process temporary-to-permanent conversions with fixed caps.
-        CORRECTED FOR SPEC-8: Perfect queue synchronization.
+        SPEC-10: Fixed conversion logic with proper wage bump.
         """
-        # CORRECTED FOR SPEC-8: Calculate slots this year with carryover
         slots_this_year = self.annual_sim_cap
-        if CARRYOVER_FRACTION_STRATEGY and self.cumulative_residual >= 1.0:
-            extra_slots = int(self.cumulative_residual)
-            slots_this_year += extra_slots
-            self.cumulative_residual -= extra_slots
-        
-        # Add residual for next year
-        if CARRYOVER_FRACTION_STRATEGY:
-            self.cumulative_residual += self.residual_fraction
         
         conversions_by_country = {}
         total_conversions = 0
         
-        # CRITICAL FIX: Track which workers are converted for perfect synchronization
+        # Track which workers are converted for perfect synchronization
         converted_worker_ids = set()
         
         if self.country_cap_enabled:
-            # Per-country capped conversions - exact allocation
+            # Per-country capped conversions
             for nationality in self.temp_nationality_distribution.keys():
                 if nationality not in self.country_queues:
                     continue
@@ -493,13 +395,14 @@ class Simulation:
                         worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
                         if worker and worker.is_temporary:
                             worker.convert_to_permanent(current_year)
+                            # SPEC-10: Apply conversion wage bump
+                            worker.apply_wage_jump(CONVERSION_WAGE_BUMP)
                 
                 conversions_by_country[nationality] = conversions_this_country
                 total_conversions += conversions_this_country
         
         else:
             # Global uncapped conversions (with fixed annual cap)
-            # Process conversions from global queue
             for _ in range(slots_this_year):
                 if not self.global_queue:
                     break
@@ -511,12 +414,13 @@ class Simulation:
                 worker = next((w for w in self.workers if w.id == temp_worker.worker_id), None)
                 if worker and worker.is_temporary:
                     worker.convert_to_permanent(current_year)
+                    # SPEC-10: Apply conversion wage bump
+                    worker.apply_wage_jump(CONVERSION_WAGE_BUMP)
                     nationality = worker.nationality
                     conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
                     total_conversions += 1
         
-        # CRITICAL FIX: Remove the EXACT SAME workers from both queue structures
-        # This ensures perfect synchronization between global and country queues
+        # Remove the EXACT SAME workers from both queue structures
         self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id not in converted_worker_ids])
         
         for nationality in self.country_queues:
@@ -528,9 +432,9 @@ class Simulation:
     def _process_count_mode_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
         """
         Process one simulation step in count-mode.
-        CORRECTED FOR SPEC-8: Fixed caps with synchronized queues.
+        SPEC-10: Fixed with synchronized queues.
         """
-        # CRITICAL FIX: Add new temporary workers to both queues from the SAME list
+        # Add new temporary workers to both queues from the SAME list
         new_temp_workers_list = []
         for _ in range(new_temporary):
             nationality = self._sample_nationality(is_temporary=True)
@@ -546,48 +450,10 @@ class Simulation:
         # Process conversions using same logic as agent mode
         return self._process_green_card_conversions(next_year)
     
-    def _approximate_wage_statistics(self, total_workers: int, permanent_workers: int, temporary_workers: int) -> WageStatistics:
-        """Approximate wage statistics for count-mode."""
-        years_elapsed = self.current_year - 2025
-        
-        # Approximate wage growth based on job change probabilities and wage jumps
-        perm_wage_growth_rate = JOB_CHANGE_PROB_PERM * (WAGE_JUMP_FACTOR_MEAN_PERM - 1)
-        temp_wage_growth_rate = JOB_CHANGE_PROB_TEMP * (WAGE_JUMP_FACTOR_MEAN_TEMP - 1)
-        
-        approx_perm_wage = STARTING_WAGE * ((1 + perm_wage_growth_rate) ** years_elapsed)
-        approx_temp_wage = STARTING_WAGE * ((1 + temp_wage_growth_rate) ** years_elapsed)
-        
-        total_wage_bill = (permanent_workers * approx_perm_wage) + (temporary_workers * approx_temp_wage)
-        avg_wage_total = total_wage_bill / total_workers if total_workers > 0 else 0.0
-        
-        return WageStatistics(
-            total_workers=total_workers,
-            permanent_workers=permanent_workers,
-            temporary_workers=temporary_workers,
-            avg_wage_total=avg_wage_total,
-            avg_wage_permanent=approx_perm_wage,
-            avg_wage_temporary=approx_temp_wage,
-            total_wage_bill=total_wage_bill
-        )
-    
-    def _approximate_nationality_statistics(self, total_workers: int, permanent_workers: int, temporary_workers: int) -> NationalityStatistics:
-        """Approximate nationality statistics for count-mode."""
-        permanent_nationalities = {str(PERMANENT_NATIONALITY): permanent_workers}
-        
-        temporary_nationalities = {}
-        for nationality, proportion in self.temp_nationality_distribution.items():
-            temporary_nationalities[nationality] = round(temporary_workers * proportion)
-        
-        return NationalityStatistics(
-            total_workers=total_workers,
-            permanent_nationalities=permanent_nationalities,
-            temporary_nationalities=temporary_nationalities
-        )
-    
     def _calculate_queue_backlogs(self) -> Dict[str, int]:
         """
         Calculate current queue backlogs by nationality.
-        CORRECTED FOR SPEC-8: Proper backlog calculation for both modes.
+        SPEC-10: Proper backlog calculation for both modes.
         
         Returns:
             Dictionary mapping nationality to queue size
@@ -635,13 +501,14 @@ class Simulation:
         else:
             print("  No permanent workers")
         
-        # Temporary worker nationalities
+        # Temporary worker nationalities  
         print("\nTemporary worker nationalities:")
-        temp_distribution = nationality_stats.get_temporary_distribution()
+        # SPEC-10: Fixed to use get_top_temporary_nationalities instead of get_temporary_distribution
+        temp_distribution = nationality_stats.get_top_temporary_nationalities(10)
         if temp_distribution:
             for nationality, proportion in sorted(temp_distribution.items(), 
                                                 key=lambda x: x[1], reverse=True):
-                count = nationality_stats.temporary_nationalities[nationality]
+                count = nationality_stats.temporary_nationalities.get(nationality, 0)
                 percentage = proportion * 100
                 print(f"  {nationality}: {percentage:.1f}% ({count:,} workers)")
         else:
@@ -663,10 +530,8 @@ class Simulation:
     def run(self) -> List[SimulationState]:
         """Run the complete simulation."""
         if hasattr(self.config, 'debug') and self.config.debug:
-            logger.info(f"CORRECTED SPEC-8 Debug Info:")
+            logger.info(f"SPEC-10 Debug Info:")
             logger.info(f"annual_sim_cap: {self.annual_sim_cap}")
-            logger.info(f"residual_fraction: {self.residual_fraction:.6f}")
-            logger.info(f"cumulative_residual: {self.cumulative_residual:.6f}")
             if self.country_cap_enabled:
                 logger.info(f"per_country_caps: {self.per_country_caps}")
         
@@ -689,7 +554,7 @@ class Simulation:
         logger.info(f"Simulation completed. Final workforce: {self.states[-1].total_workers:,}")
         logger.info(f"Total conversions: {self.cumulative_conversions:,}")
         
-        # CORRECTED FOR SPEC-8: Final debug output
+        # Final debug output
         if hasattr(self.config, 'debug') and self.config.debug:
             total_backlog_uncapped = len(self.global_queue)
             total_backlog_capped = sum(len(queue) for queue in self.country_queues.values())
@@ -767,15 +632,17 @@ class Simulation:
             stats.update({
                 'per_country_caps': self.per_country_caps,
                 'per_country_cap_rate': PER_COUNTRY_CAP_SHARE,
-                'final_queue_backlogs': final_state.queue_backlog_by_country,
-                'countries_with_backlogs': len([b for b in final_state.queue_backlog_by_country.values() if b > 0])
+                'final_queue_backlogs': self._calculate_queue_backlogs(),
+                'countries_with_backlogs': len([b for b in self._calculate_queue_backlogs().values() if b > 0])
             })
             
             # Calculate total conversions by country
             total_conversions_by_country = defaultdict(int)
             for state in self.states[1:]:
-                for nationality, conversions in state.converted_by_country.items():
-                    total_conversions_by_country[nationality] += conversions
+                # SPEC-10: Handle cases where converted_by_country might not exist
+                if hasattr(state, 'converted_by_country'):
+                    for nationality, conversions in state.converted_by_country.items():
+                        total_conversions_by_country[nationality] += conversions
             
             stats['total_conversions_by_country'] = dict(total_conversions_by_country)
         
@@ -784,7 +651,7 @@ class Simulation:
     # Validation methods for testing
     def validate_fixed_conversion_invariants(self) -> bool:
         """
-        Validate CORRECTED SPEC-8 invariants.
+        Validate SPEC-10 invariants.
         
         Returns:
             True if all invariants hold
@@ -798,10 +665,10 @@ class Simulation:
                 logger.error(f"Invariant A failed: Year {state.year} cap {state.annual_conversion_cap} != expected {self.annual_sim_cap}")
                 return False
         
-        # Check conversions don't exceed cap (except for carryover +1)
+        # Check conversions don't exceed cap
         for state in self.states[1:]:
-            if state.converted_temps > self.annual_sim_cap + 1:
-                logger.error(f"Invariant A failed: Year {state.year} conversions {state.converted_temps} > cap {self.annual_sim_cap} + 1")
+            if state.converted_temps > self.annual_sim_cap:
+                logger.error(f"Invariant A failed: Year {state.year} conversions {state.converted_temps} > cap {self.annual_sim_cap}")
                 return False
         
         return True
