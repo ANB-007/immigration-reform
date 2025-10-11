@@ -2,8 +2,7 @@
 """
 Core simulation engine for workforce growth modeling.
 Handles worker dynamics, green card conversions, and wage tracking.
-SPEC-10: Fixed to use empirical parameters and streamlined models.
-CRITICAL FIX: Special "Other" category handling, consistent wage initialization, perfect queue sync.
+CLEANUP: Removed age, legacy attributes, redundant fields, and dependencies on removed config flags.
 """
 
 import logging
@@ -33,56 +32,47 @@ logger = logging.getLogger(__name__)
 class Simulation:
     """
     Core simulation engine for workforce growth modeling.
-    SPEC-10: Streamlined with empirical parameters and fixed data models.
-    CRITICAL FIX: Special "Other" category handling, perfect queue synchronization, consistent wages.
+    CLEANUP: Removed dependencies on removed config flags and cleaned up worker creation.
     """
     
     def __init__(self, config: SimulationConfig):
-        """
-        Initialize simulation with configuration.
-        CRITICAL FIX: Perfect queue initialization, consistent wage handling, "Other" category support.
-        
-        Args:
-            config: SimulationConfig object with simulation parameters
-        """
+        """Initialize simulation with configuration."""
         self.config = config
         self.current_year = config.start_year
         self.states: List[SimulationState] = []
         self.workers: List[Worker] = []
         self.next_worker_id = 1
         
-        # SPEC-10: Single RNG for all stochastic operations
+        # Single RNG for all stochastic operations
         self.rng = np.random.default_rng(config.seed)
         
         # Load nationality distribution
         self.temp_nationality_distribution = TEMP_NATIONALITY_DISTRIBUTION.copy()
         
-        # SPEC-10: Fixed annual conversion cap using empirical function - SET ONCE AND NEVER CHANGE
+        # Fixed annual conversion cap - SET ONCE AND NEVER CHANGE
         self.annual_sim_cap = calculate_annual_conversion_cap(config.initial_workers)
         
         logger.info(f"Annual conversion cap: {self.annual_sim_cap} (FIXED - will never change)")
         
-        # SPEC-10: Per-country cap system with special "Other" category handling
+        # Per-country cap system with special "Other" category handling
         self.country_cap_enabled = config.country_cap_enabled
         if self.country_cap_enabled:
             nationalities = list(self.temp_nationality_distribution.keys())
-            # CRITICAL FIX: Use new "Other" category handling
             self.per_country_caps = calculate_per_country_caps_with_other_handling(
                 self.annual_sim_cap, nationalities
             )
             
-            # Verify total (should always equal annual_sim_cap now)
+            # Verify total
             total_per_country_slots = sum(self.per_country_caps.values())
             if total_per_country_slots != self.annual_sim_cap:
                 logger.warning(f"Per-country caps sum to {total_per_country_slots}, expected {self.annual_sim_cap}")
             
             logger.info(f"Per-country caps: {self.per_country_caps}")
-            logger.info(f"Total per-country slots: {total_per_country_slots}")
             logger.info(f"'Other' category allocation: {self.per_country_caps.get(OTHER_CATEGORY_NAME, 0)}")
         else:
             self.per_country_caps = {}
         
-        # CRITICAL FIX: Initialize queues as empty - perfect synchronization from start
+        # Initialize queues as empty - perfect synchronization from start
         self.global_queue = deque()  # FIFO order for uncapped mode
         self.country_queues = {
             nationality: deque() for nationality in self.temp_nationality_distribution.keys()
@@ -106,10 +96,7 @@ class Simulation:
         logger.info(f"Initial H-1B share: {self.states[0].h1b_share:.3%}")
     
     def _initialize_workforce(self) -> None:
-        """
-        Initialize the workforce with proper H-1B/permanent split.
-        CRITICAL FIX: Perfect wage consistency, no queue initialization to prevent first-year spike.
-        """
+        """Initialize the workforce with proper H-1B/permanent split."""
         initial_temporary = round(self.config.initial_workers * H1B_SHARE)
         initial_permanent = self.config.initial_workers - initial_temporary
         
@@ -120,98 +107,73 @@ class Simulation:
                 "Results may show discretization effects."
             )
         
-        # Agent-mode: Create individual Worker objects
-        if self.config.agent_mode:
-            # CRITICAL FIX: Create permanent workers with EXACTLY the starting wage
-            for i in range(initial_permanent):
-                worker = Worker(
-                    id=self.next_worker_id,
-                    status=WorkerStatus.PERMANENT,
-                    nationality=str(PERMANENT_NATIONALITY),
-                    simulation_start_year=self.current_year,
-                    entry_year_offset=0,
-                    age=self.rng.integers(25, 65),
-                    wage=float(STARTING_WAGE)  # CRITICAL FIX: Explicit float conversion
-                )
-                # CRITICAL FIX: Verify wage is exactly correct
-                assert worker.wage == STARTING_WAGE, f"Worker {worker.id} wage {worker.wage} != {STARTING_WAGE}"
-                self.workers.append(worker)
-                self.next_worker_id += 1
-            
-            # CRITICAL FIX: Create temporary workers with EXACTLY the starting wage
-            for i in range(initial_temporary):
-                nationality = self._sample_nationality(is_temporary=True)
-                worker = Worker(
-                    id=self.next_worker_id,
-                    status=WorkerStatus.TEMPORARY,
-                    nationality=str(nationality),
-                    simulation_start_year=self.current_year,
-                    entry_year_offset=0,
-                    age=self.rng.integers(25, 55),
-                    wage=float(STARTING_WAGE)  # CRITICAL FIX: Explicit float conversion
-                )
-                # CRITICAL FIX: Verify wage is exactly correct
-                assert worker.wage == STARTING_WAGE, f"Worker {worker.id} wage {worker.wage} != {STARTING_WAGE}"
-                self.workers.append(worker)
-                self.next_worker_id += 1
-            
-            # Calculate initial statistics
-            wage_stats = WageStatistics.calculate(self.workers)
-            nationality_stats = NationalityStatistics.calculate(self.workers)
-            
-            # CRITICAL FIX: Verify ALL starting wages are exactly correct
-            if abs(wage_stats.avg_wage_total - STARTING_WAGE) > 0.01:
-                logger.error(f"CRITICAL WAGE BUG: Average wage {wage_stats.avg_wage_total:.2f} != expected {STARTING_WAGE:.2f}")
-                # Debug individual wages
-                for worker in self.workers[:5]:
-                    logger.error(f"Worker {worker.id}: wage={worker.wage}, status={worker.status.value}")
-                raise RuntimeError("Worker initialization failed - wages not set to exactly STARTING_WAGE")
-            else:
-                logger.info(f"CRITICAL FIX VERIFIED: All workers start at exactly ${STARTING_WAGE:,.0f}")
-            
+        # Create permanent workers with EXACTLY the starting wage
+        for i in range(initial_permanent):
+            worker = Worker(
+                id=self.next_worker_id,
+                status=WorkerStatus.PERMANENT,
+                nationality=str(PERMANENT_NATIONALITY),
+                created_year=self.current_year,
+                entry_year_offset=0,
+                wage=float(STARTING_WAGE)
+            )
+            # Verify wage is exactly correct
+            assert worker.wage == STARTING_WAGE, f"Worker {worker.id} wage {worker.wage} != {STARTING_WAGE}"
+            self.workers.append(worker)
+            self.next_worker_id += 1
+        
+        # Create temporary workers with EXACTLY the starting wage
+        for i in range(initial_temporary):
+            nationality = self._sample_nationality(is_temporary=True)
+            worker = Worker(
+                id=self.next_worker_id,
+                status=WorkerStatus.TEMPORARY,
+                nationality=str(nationality),
+                created_year=self.current_year,
+                entry_year_offset=0,
+                wage=float(STARTING_WAGE)
+            )
+            # Verify wage is exactly correct
+            assert worker.wage == STARTING_WAGE, f"Worker {worker.id} wage {worker.wage} != {STARTING_WAGE}"
+            self.workers.append(worker)
+            self.next_worker_id += 1
+        
+        # Calculate initial statistics
+        wage_stats = WageStatistics.calculate(self.workers)
+        nationality_stats = NationalityStatistics.calculate(self.workers)
+        
+        # Verify ALL starting wages are exactly correct
+        if abs(wage_stats.avg_wage_total - STARTING_WAGE) > 0.01:
+            logger.error(f"CRITICAL WAGE BUG: Average wage {wage_stats.avg_wage_total:.2f} != expected {STARTING_WAGE:.2f}")
+            raise RuntimeError("Worker initialization failed - wages not set to exactly STARTING_WAGE")
         else:
-            # Count-mode: use exact starting wage
-            wage_stats = WageStatistics(
-                total_workers=self.config.initial_workers,
-                permanent_workers=initial_permanent,
-                temporary_workers=initial_temporary,
-                avg_wage_total=float(STARTING_WAGE),
-                avg_wage_permanent=float(STARTING_WAGE),
-                avg_wage_temporary=float(STARTING_WAGE),
-                total_wage_bill=float(STARTING_WAGE) * self.config.initial_workers
-            )
-            nationality_stats = NationalityStatistics(
-                total_workers=self.config.initial_workers,
-                permanent_nationalities={str(PERMANENT_NATIONALITY): initial_permanent},
-                temporary_nationalities={k: round(v * initial_temporary) for k, v in self.temp_nationality_distribution.items()}
-            )
+            logger.info(f"VERIFIED: All workers start at exactly ${STARTING_WAGE:,.0f}")
         
-        # CRITICAL FIX: NO initial workers in conversion queues - completely empty to prevent first-year spike
+        # NO initial workers in conversion queues - completely empty to prevent first-year spike
         
-        # CRITICAL FIX: Create initial state with exactly the calculated annual_sim_cap (never changes)
+        # Create initial state with exactly the calculated annual_sim_cap (never changes)
         initial_state = SimulationState(
             year=self.current_year,
             workers=self.workers.copy(),
-            annual_conversion_cap=self.annual_sim_cap,  # CRITICAL FIX: Set once, never changes
+            annual_conversion_cap=self.annual_sim_cap,
             new_permanent=0,
             new_temporary=0,
-            converted_temps=0,  # CRITICAL FIX: No conversions in initial state
+            converted_temps=0,
             cumulative_conversions=0,
             country_cap_enabled=self.country_cap_enabled
         )
         
         self.states.append(initial_state)
         
-        # CRITICAL FIX: Verify queues are empty and wages are correct
+        # Verify queues are empty
         total_in_queues = len(self.global_queue) + sum(len(q) for q in self.country_queues.values())
         if total_in_queues > 0:
             raise RuntimeError(f"CRITICAL BUG: {total_in_queues} workers in queues at initialization - should be 0")
         
-        logger.info(f"CRITICAL FIX VERIFIED: Queues empty, all wages exactly ${STARTING_WAGE:,.0f}")
+        logger.info(f"VERIFIED: Queues empty, all wages exactly ${STARTING_WAGE:,.0f}")
         
-        # Print nationality summary if requested
-        if self.config.show_nationality_summary:
-            self._print_nationality_summary("INITIAL", nationality_stats)
+        # Print nationality summary
+        self._print_nationality_summary("INITIAL", nationality_stats)
     
     def _sample_nationality(self, is_temporary: bool) -> str:
         """Sample a nationality for a new worker."""
@@ -225,13 +187,7 @@ class Simulation:
         return str(selected)
     
     def step(self) -> SimulationState:
-        """
-        Execute one simulation step (one year).
-        CRITICAL FIX: Proper sequencing, consistent wage handling, perfect queue synchronization.
-        
-        Returns:
-            SimulationState representing the state after this step
-        """
+        """Execute one simulation step (one year)."""
         next_year = self.current_year + 1
         
         # Calculate new entries based on current total workforce
@@ -239,26 +195,21 @@ class Simulation:
         new_permanent = round(current_total * ANNUAL_PERMANENT_ENTRY_RATE)
         new_temporary = round(current_total * ANNUAL_H1B_ENTRY_RATE)
         
-        if hasattr(self.config, 'debug') and self.config.debug:
+        if self.config.debug:
             logger.info(f"Year {next_year}: Adding {new_permanent} permanent, {new_temporary} temporary workers")
         
-        if self.config.agent_mode:
-            converted_temps, conversions_by_country = self._process_agent_mode_step(
-                next_year, new_permanent, new_temporary
-            )
-        else:
-            converted_temps, conversions_by_country = self._process_count_mode_step(
-                next_year, new_permanent, new_temporary
-            )
+        converted_temps, conversions_by_country = self._process_step(
+            next_year, new_permanent, new_temporary
+        )
         
         # Update cumulative conversions
         self.cumulative_conversions += converted_temps
         
-        # CRITICAL FIX: Create new state with FIXED annual_conversion_cap that never changes
+        # Create new state with FIXED annual_conversion_cap that never changes
         new_state = SimulationState(
             year=next_year,
             workers=self.workers.copy(),
-            annual_conversion_cap=self.annual_sim_cap,  # CRITICAL FIX: Always the same value
+            annual_conversion_cap=self.annual_sim_cap,
             new_permanent=new_permanent,
             new_temporary=new_temporary,
             converted_temps=converted_temps,
@@ -266,8 +217,8 @@ class Simulation:
             country_cap_enabled=self.country_cap_enabled
         )
         
-        # CRITICAL FIX: Debug output and verification
-        if hasattr(self.config, 'debug') and self.config.debug:
+        # Debug output and verification
+        if self.config.debug:
             total_backlog_uncapped = len(self.global_queue)
             total_backlog_capped = sum(len(queue) for queue in self.country_queues.values())
             logger.info(f"Year {next_year}: slots={self.annual_sim_cap} (CONSTANT), converted={converted_temps}, "
@@ -276,7 +227,7 @@ class Simulation:
             if self.country_cap_enabled:
                 logger.info(f"Per-country conversions: {conversions_by_country}, sum={sum(conversions_by_country.values())}")
             
-            # CRITICAL FIX: Verify queue synchronization
+            # Verify queue synchronization
             if abs(total_backlog_uncapped - total_backlog_capped) > 1:
                 logger.warning(f"QUEUE SYNC ISSUE: uncapped={total_backlog_uncapped}, capped={total_backlog_capped}")
         
@@ -285,28 +236,24 @@ class Simulation:
         
         return new_state
     
-    def _process_agent_mode_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
-        """
-        Process one simulation step in agent-mode.
-        CRITICAL FIX: Perfect wage consistency, proper queue management, "Other" category handling.
-        """
-        # 1. CRITICAL FIX: Add new permanent workers with EXACTLY the starting wage
+    def _process_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
+        """Process one simulation step."""
+        # 1. Add new permanent workers with EXACTLY the starting wage
         for _ in range(new_permanent):
             worker = Worker(
                 id=self.next_worker_id,
                 status=WorkerStatus.PERMANENT,
                 nationality=str(PERMANENT_NATIONALITY),
-                simulation_start_year=self.config.start_year,
+                created_year=self.config.start_year,
                 entry_year_offset=next_year - self.config.start_year,
-                age=self.rng.integers(25, 65),
-                wage=float(STARTING_WAGE)  # CRITICAL FIX: Explicit float, exact wage
+                wage=float(STARTING_WAGE)
             )
-            # CRITICAL FIX: Verify new worker wage
+            # Verify new worker wage
             assert worker.wage == STARTING_WAGE, f"New worker {worker.id} wage {worker.wage} != {STARTING_WAGE}"
             self.workers.append(worker)
             self.next_worker_id += 1
         
-        # 2. CRITICAL FIX: Add new temporary workers with EXACTLY the starting wage AND perfect queue sync
+        # 2. Add new temporary workers with EXACTLY the starting wage AND perfect queue sync
         new_temp_workers_list = []
         for _ in range(new_temporary):
             nationality = self._sample_nationality(is_temporary=True)
@@ -314,21 +261,20 @@ class Simulation:
                 id=self.next_worker_id,
                 status=WorkerStatus.TEMPORARY,
                 nationality=str(nationality),
-                simulation_start_year=self.config.start_year,
+                created_year=self.config.start_year,
                 entry_year_offset=next_year - self.config.start_year,
-                age=self.rng.integers(25, 55),
-                wage=float(STARTING_WAGE)  # CRITICAL FIX: Explicit float, exact wage
+                wage=float(STARTING_WAGE)
             )
-            # CRITICAL FIX: Verify new worker wage
+            # Verify new worker wage
             assert worker.wage == STARTING_WAGE, f"New worker {worker.id} wage {worker.wage} != {STARTING_WAGE}"
             self.workers.append(worker)
             
-            # CRITICAL FIX: Add new temporary workers to queues for future conversions
+            # Add new temporary workers to queues for future conversions
             temp_worker = TemporaryWorker(worker.id, next_year, nationality)
             new_temp_workers_list.append(temp_worker)
             self.next_worker_id += 1
         
-        # CRITICAL FIX: Add new workers to BOTH queues from the EXACT SAME list to maintain perfect synchronization
+        # Add new workers to BOTH queues from the EXACT SAME list to maintain perfect synchronization
         for temp_worker in new_temp_workers_list:
             self.global_queue.append(temp_worker)
             self.country_queues[temp_worker.nationality].append(temp_worker)
@@ -336,20 +282,17 @@ class Simulation:
         # 3. Process conversions FIRST (before wage changes to avoid double-jumps)
         converted_temps, conversions_by_country = self._process_green_card_conversions(next_year)
         
-        # 4. CRITICAL FIX: Process job changes AFTER conversions, only for eligible workers
+        # 4. Process job changes AFTER conversions, only for eligible workers
         self._process_job_changes(next_year)
         
         return converted_temps, conversions_by_country
     
     def _process_job_changes(self, current_year: int) -> None:
-        """
-        Process job changes and wage updates for all workers.
-        CRITICAL FIX: Only eligible workers get job changes, robust wage growth parameters.
-        """
-        # CRITICAL FIX: Only process workers who have been in the system for at least one full year
+        """Process job changes and wage updates for all workers."""
+        # Only process workers who have been in the system for at least one full year
         eligible_workers = [w for w in self.workers if w.entry_year < current_year]
         
-        if hasattr(self.config, 'debug') and self.config.debug:
+        if self.config.debug:
             logger.info(f"Job changes: {len(eligible_workers)} eligible workers out of {len(self.workers)} total")
         
         job_changes_applied = 0
@@ -387,19 +330,16 @@ class Simulation:
                 worker.apply_wage_jump(jump_factor)
                 job_changes_applied += 1
                 
-                # CRITICAL FIX: Debug logging for wage changes
-                if hasattr(self.config, 'debug') and self.config.debug and old_wage != worker.wage:
+                # Debug logging for wage changes
+                if self.config.debug and old_wage != worker.wage:
                     logger.debug(f"Worker {worker.id} job change: ${old_wage:.0f} -> ${worker.wage:.0f} (x{jump_factor:.3f})")
         
-        if hasattr(self.config, 'debug') and self.config.debug:
+        if self.config.debug:
             logger.info(f"Applied {job_changes_applied} job changes out of {len(eligible_workers)} eligible workers")
     
     def _process_green_card_conversions(self, current_year: int) -> Tuple[int, Dict[str, int]]:
-        """
-        Process temporary-to-permanent conversions with fixed caps.
-        CRITICAL FIX: Special "Other" category handling, perfect queue synchronization, all slots used.
-        """
-        # CRITICAL FIX: Use exactly the fixed annual cap - no variations
+        """Process temporary-to-permanent conversions with fixed caps."""
+        # Use exactly the fixed annual cap - no variations
         slots_this_year = self.annual_sim_cap
         
         conversions_by_country = {}
@@ -409,7 +349,7 @@ class Simulation:
         converted_worker_ids = set()
         
         if self.country_cap_enabled:
-            # CRITICAL FIX: Per-country capped conversions with special "Other" handling
+            # Per-country capped conversions with special "Other" handling
             
             # First, process individual countries with their 7% caps (maintaining FIFO within each queue)
             individual_countries = [n for n in self.temp_nationality_distribution.keys() if n != OTHER_CATEGORY_NAME]
@@ -440,7 +380,7 @@ class Simulation:
                 conversions_by_country[nationality] = conversions_this_country
                 total_conversions += conversions_this_country
             
-            # CRITICAL FIX: Now process "Other" category with all remaining slots
+            # Now process "Other" category with all remaining slots
             if OTHER_CATEGORY_NAME in self.country_queues:
                 other_queue = self.country_queues[OTHER_CATEGORY_NAME]
                 remaining_slots = slots_this_year - total_conversions
@@ -482,56 +422,29 @@ class Simulation:
                     conversions_by_country[nationality] = conversions_by_country.get(nationality, 0) + 1
                     total_conversions += 1
         
-        # CRITICAL FIX: Remove the EXACT SAME workers from BOTH queue structures for perfect synchronization
+        # Remove the EXACT SAME workers from BOTH queue structures for perfect synchronization
         self.global_queue = deque([tw for tw in self.global_queue if tw.worker_id not in converted_worker_ids])
         
         for nationality in self.country_queues:
             self.country_queues[nationality] = deque([tw for tw in self.country_queues[nationality] 
                                                      if tw.worker_id not in converted_worker_ids])
         
-        # CRITICAL FIX: Verify queue synchronization after conversion processing
+        # Verify queue synchronization after conversion processing
         total_global_after = len(self.global_queue)
         total_country_after = sum(len(queue) for queue in self.country_queues.values())
         if abs(total_global_after - total_country_after) > 0:
             logger.warning(f"QUEUE SYNC ISSUE AFTER CONVERSIONS: global={total_global_after}, country={total_country_after}")
         
-        # CRITICAL FIX: Log conversion info to verify consistency
-        if hasattr(self.config, 'debug') and self.config.debug:
+        # Log conversion info to verify consistency
+        if self.config.debug:
             logger.info(f"Year {current_year}: Converted {total_conversions} workers (cap: {slots_this_year} FIXED)")
             if total_conversions != slots_this_year and (total_global_after > 0 or total_country_after > 0):
                 logger.warning(f"Not all slots used: {total_conversions}/{slots_this_year}, remaining workers in queues")
         
         return total_conversions, conversions_by_country
     
-    def _process_count_mode_step(self, next_year: int, new_permanent: int, new_temporary: int) -> Tuple[int, Dict[str, int]]:
-        """
-        Process one simulation step in count-mode.
-        CRITICAL FIX: Perfect queue synchronization.
-        """
-        # Add new temporary workers to both queues from the SAME list
-        new_temp_workers_list = []
-        for _ in range(new_temporary):
-            nationality = self._sample_nationality(is_temporary=True)
-            temp_worker = TemporaryWorker(self.next_worker_id, next_year, nationality)
-            new_temp_workers_list.append(temp_worker)
-            self.next_worker_id += 1
-        
-        # Add to queues from the same list for perfect synchronization
-        for temp_worker in new_temp_workers_list:
-            self.global_queue.append(temp_worker)
-            self.country_queues[temp_worker.nationality].append(temp_worker)
-        
-        # Process conversions using same logic as agent mode
-        return self._process_green_card_conversions(next_year)
-    
     def _calculate_queue_backlogs(self) -> Dict[str, int]:
-        """
-        Calculate current queue backlogs by nationality.
-        SPEC-10: Proper backlog calculation for both modes.
-        
-        Returns:
-            Dictionary mapping nationality to queue size
-        """
+        """Calculate current queue backlogs by nationality."""
         backlogs = {}
         
         if self.country_cap_enabled:
@@ -603,8 +516,8 @@ class Simulation:
     
     def run(self) -> List[SimulationState]:
         """Run the complete simulation."""
-        if hasattr(self.config, 'debug') and self.config.debug:
-            logger.info(f"CRITICAL FIX - SPEC-10 Debug Info:")
+        if self.config.debug:
+            logger.info(f"Debug Info:")
             logger.info(f"annual_sim_cap: {self.annual_sim_cap} (FIXED - never changes)")
             if self.country_cap_enabled:
                 logger.info(f"per_country_caps: {self.per_country_caps}")
@@ -621,16 +534,15 @@ class Simulation:
                            f"{state.converted_temps} conversions, "
                            f"${state.avg_wage_total:,.0f} avg wage")
         
-        # Print final nationality summary if requested
-        if self.config.show_nationality_summary and self.config.agent_mode:
-            final_nationality_stats = NationalityStatistics.calculate(self.workers)
-            self._print_nationality_summary("FINAL", final_nationality_stats)
+        # Print final nationality summary
+        final_nationality_stats = NationalityStatistics.calculate(self.workers)
+        self._print_nationality_summary("FINAL", final_nationality_stats)
         
         logger.info(f"Simulation completed. Final workforce: {self.states[-1].total_workers:,}")
         logger.info(f"Total conversions: {self.cumulative_conversions:,}")
         
-        # CRITICAL FIX: Final validation and debug output
-        if hasattr(self.config, 'debug') and self.config.debug:
+        # Final validation and debug output
+        if self.config.debug:
             total_backlog_uncapped = len(self.global_queue)
             total_backlog_capped = sum(len(queue) for queue in self.country_queues.values())
             logger.info(f"Final queue lengths - Uncapped: {total_backlog_uncapped}, Capped: {total_backlog_capped}")
@@ -655,9 +567,6 @@ class Simulation:
     
     def to_agent_model(self) -> List[Worker]:
         """Convert simulation to agent-based model for detailed analysis."""
-        if not self.config.agent_mode:
-            logger.warning("Simulation not run in agent-mode. Worker data may be incomplete.")
-        
         return self.workers.copy()
     
     def get_summary_stats(self) -> Dict[str, any]:
@@ -691,7 +600,7 @@ class Simulation:
         
         stats = {
             'years_simulated': years_simulated,
-            'simulation_mode': 'Agent-based' if self.config.agent_mode else 'Count-based',
+            'simulation_mode': 'Agent-based',
             'industry': 'Information Technology',
             'initial_workforce': initial_state.total_workers,
             'final_workforce': final_state.total_workers,
@@ -738,12 +647,7 @@ class Simulation:
     
     # Validation methods for testing
     def validate_fixed_conversion_invariants(self) -> bool:
-        """
-        Validate SPEC-10 invariants.
-        
-        Returns:
-            True if all invariants hold
-        """
+        """Validate invariants."""
         if len(self.states) < 2:
             return True
         

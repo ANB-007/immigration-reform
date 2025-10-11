@@ -3,8 +3,7 @@
 Streamlined data models for workforce simulation.
 SPEC-10: Eliminated hardcoding, removed redundant variables, implemented on-the-fly aggregation.
 All temporal attributes are dynamically determined, aggregates computed from worker data.
-CRITICAL FIX: Resolved field() bug, fixed BacklogAnalysis counting, proper Worker initialization.
-EMERGENCY FIX: Fixed 'workers' variable name error and wage growth calculation issues.
+CLEANUP: Removed age, legacy attributes, redundant temporal fields, and unused variables.
 """
 
 from dataclasses import dataclass, field
@@ -33,16 +32,11 @@ class SimulationConfig:
     initial_workers: int
     years: int
     seed: Optional[int] = None
-    live_fetch: bool = False
     output_path: str = "data/sample_output.csv"
-    agent_mode: bool = True
-    show_nationality_summary: bool = False
     country_cap_enabled: bool = False
     compare_backlogs: bool = False
     debug: bool = False
-    flat_slots: bool = True
-    carryover_slots: bool = False
-    start_year: int = DEFAULT_SIMULATION_START_YEAR  # SPEC-10: Dynamic start year
+    start_year: int = DEFAULT_SIMULATION_START_YEAR
     
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -50,62 +44,37 @@ class SimulationConfig:
             raise ValueError("initial_workers must be positive")
         if self.years <= 0:
             raise ValueError("years must be positive")
-        
-        # Ensure only one slots strategy is enabled
-        if self.carryover_slots:
-            self.flat_slots = False
 
 class Worker:
     """
-    Individual worker with dynamic temporal attributes.
-    SPEC-10: No hardcoded years, all temporal attributes computed from simulation context.
-    CRITICAL FIX: Removed erroneous field() usage that was causing wage initialization issues.
+    Individual worker with essential attributes only.
+    CLEANUP: Removed age, legacy attributes, redundant fields, and unused variables.
     """
     
     def __init__(self, id: int, status: WorkerStatus, nationality: str, 
-                 simulation_start_year: int, entry_year_offset: int = 0, 
-                 age: int = 35, wage: float = 95000.0):
+                 created_year: int, entry_year_offset: int = 0, wage: float = 95000.0):
         """
-        Initialize worker with dynamic temporal attributes.
-        SPEC-10: All years computed relative to simulation_start_year.
-        CRITICAL FIX: Proper attribute initialization without field() errors.
+        Initialize worker with essential attributes only.
         
         Args:
             id: Unique worker identifier
             status: Employment status
             nationality: Worker's nationality
-            simulation_start_year: Base year for simulation
-            entry_year_offset: Years from start when worker entered (0 = existing worker)
-            age: Worker's age
+            created_year: When this worker record was created in the simulation
+            entry_year_offset: Years from creation when worker entered (0 = existing worker)
             wage: Current wage in USD
         """
         self.id = id
         self.status = status
         self.nationality = nationality
-        self.age = age
         self.wage = wage
         
-        # SPEC-10: Dynamic temporal attributes
-        self.simulation_start_year = simulation_start_year
-        self.entry_year = simulation_start_year + entry_year_offset
-        self.created_year = simulation_start_year  # When record was created
+        # FIXED: Proper temporal attributes without redundancy
+        self.created_year = created_year  # When record was created
+        self.entry_year = created_year + entry_year_offset  # When worker actually entered workforce
         
-        # Legacy attributes for backward compatibility (computed dynamically)
-        self.year_joined = self.entry_year
-        
-        # Conversion tracking
+        # Conversion tracking (single field only)
         self.conversion_year: Optional[int] = None
-        self.converted_year: Optional[int] = None  # Alias for conversion_year
-        self.was_converted: bool = False
-        
-        # Deterministic ordering for queue processing
-        self.arrival_index: Optional[int] = None
-        
-        # CRITICAL FIX: Direct initialization without field() - NO dataclass decorators on non-dataclass
-        self.skills: Optional[List[str]] = None
-        self.occupation: Optional[str] = None
-        self.employer_id: Optional[int] = None
-        self.attributes: Dict[str, Any] = {}  # CRITICAL FIX: Direct dict, not field()
     
     @property
     def is_temporary(self) -> bool:
@@ -117,43 +86,20 @@ class Worker:
         """Check if worker has permanent status."""
         return self.status == WorkerStatus.PERMANENT
     
-    def years_in_workforce(self, current_year: int) -> int:
-        """
-        Calculate years worker has been in workforce.
-        SPEC-10: Enables time-based wage growth calculations.
-        """
-        return max(0, current_year - self.entry_year)
-    
-    def years_as_temporary(self, current_year: int) -> int:
-        """Calculate years as temporary worker."""
-        if self.is_permanent and self.conversion_year:
-            return max(0, self.conversion_year - self.entry_year)
-        elif self.is_temporary:
-            return max(0, current_year - self.entry_year)
-        return 0
-    
-    def years_as_permanent(self, current_year: int) -> int:
-        """Calculate years as permanent worker."""
-        if self.is_permanent:
-            start_permanent = self.conversion_year or self.entry_year
-            return max(0, current_year - start_permanent)
-        return 0
+    @property
+    def was_converted(self) -> bool:
+        """Check if worker was converted from temporary to permanent."""
+        return self.conversion_year is not None
     
     def convert_to_permanent(self, conversion_year: int) -> None:
         """Convert worker from temporary to permanent status."""
         if self.is_temporary:
             self.status = WorkerStatus.PERMANENT
             self.conversion_year = conversion_year
-            self.converted_year = conversion_year  # Alias
-            self.was_converted = True
     
     def apply_wage_jump(self, multiplier: float) -> None:
         """Apply wage increase due to job change."""
-        old_wage = self.wage
         self.wage *= multiplier
-        # CRITICAL FIX: Debug logging to track wage changes
-        if hasattr(self, '_debug') and self._debug:
-            print(f"Worker {self.id}: wage jump {old_wage:.0f} -> {self.wage:.0f} (x{multiplier:.3f})")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert worker to dictionary representation."""
@@ -161,20 +107,10 @@ class Worker:
             'id': self.id,
             'status': self.status.value,
             'nationality': self.nationality,
-            'age': self.age,
             'wage': self.wage,
-            'simulation_start_year': self.simulation_start_year,
-            'entry_year': self.entry_year,
             'created_year': self.created_year,
-            'year_joined': self.year_joined,
-            'conversion_year': self.conversion_year,
-            'converted_year': self.converted_year,
-            'was_converted': self.was_converted,
-            'arrival_index': self.arrival_index,
-            'skills': self.skills,
-            'occupation': self.occupation,
-            'employer_id': self.employer_id,
-            'attributes': self.attributes
+            'entry_year': self.entry_year,
+            'conversion_year': self.conversion_year
         }
     
     @classmethod
@@ -184,50 +120,39 @@ class Worker:
             id=data['id'],
             status=WorkerStatus(data['status']),
             nationality=data['nationality'],
-            simulation_start_year=data.get('simulation_start_year', DEFAULT_SIMULATION_START_YEAR),
-            entry_year_offset=data.get('entry_year', DEFAULT_SIMULATION_START_YEAR) - data.get('simulation_start_year', DEFAULT_SIMULATION_START_YEAR),
-            age=data.get('age', 35),
+            created_year=data.get('created_year', DEFAULT_SIMULATION_START_YEAR),
+            entry_year_offset=data.get('entry_year', DEFAULT_SIMULATION_START_YEAR) - data.get('created_year', DEFAULT_SIMULATION_START_YEAR),
             wage=data.get('wage', 95000.0)
         )
         
-        # Set additional attributes
+        # Set conversion year if present
         worker.conversion_year = data.get('conversion_year')
-        worker.converted_year = data.get('converted_year')
-        worker.was_converted = data.get('was_converted', False)
-        worker.arrival_index = data.get('arrival_index')
-        worker.skills = data.get('skills')
-        worker.occupation = data.get('occupation')
-        worker.employer_id = data.get('employer_id')
-        worker.attributes = data.get('attributes', {})
         
         return worker
     
     def __repr__(self) -> str:
         return (f"Worker(id={self.id}, status={self.status.value}, "
-                f"nationality='{self.nationality}', age={self.age}, "
+                f"nationality='{self.nationality}', "
                 f"wage={self.wage}, entry_year={self.entry_year})")
 
 class TemporaryWorker:
     """
     Simplified temporary worker for queue management.
-    SPEC-10: Dynamic temporal attributes.
+    CLEANUP: Removed redundant fields.
     """
     
     def __init__(self, worker_id: int, entry_year: int, nationality: str):
         """Initialize temporary worker for queue."""
         self.worker_id = worker_id
-        self.year_joined = entry_year  # Legacy alias
         self.entry_year = entry_year
         self.nationality = nationality
-        self.arrival_index: Optional[int] = None
     
     def __repr__(self) -> str:
         return f"TemporaryWorker(id={self.worker_id}, entry_year={self.entry_year}, nationality='{self.nationality}')"
 
-# SPEC-10: Legacy statistics classes for backward compatibility with other modules
 @dataclass
 class WageStatistics:
-    """Wage statistics computed from worker data (legacy compatibility)."""
+    """Wage statistics computed from worker data."""
     total_workers: int
     permanent_workers: int
     temporary_workers: int
@@ -262,7 +187,7 @@ class WageStatistics:
 
 @dataclass
 class NationalityStatistics:
-    """Nationality statistics computed from worker data (legacy compatibility)."""
+    """Nationality statistics computed from worker data."""
     total_workers: int
     permanent_nationalities: Dict[str, int] = field(default_factory=dict)
     temporary_nationalities: Dict[str, int] = field(default_factory=dict)
@@ -303,12 +228,11 @@ class NationalityStatistics:
 class SimulationState:
     """
     Complete simulation state at a time point.
-    SPEC-10: Streamlined to essential metrics, aggregates computed on-the-fly from worker data.
-    CRITICAL FIX: Fixed wage calculation and constant annual conversion cap.
+    CLEANUP: Removed legacy fields, streamlined to essential data.
     """
     year: int
-    workers: List[Worker] = field(default_factory=list)  # Source of truth
-    annual_conversion_cap: int = 0  # CRITICAL FIX: Should be set once and remain constant
+    workers: List[Worker] = field(default_factory=list)
+    annual_conversion_cap: int = 0
     
     # Conversion tracking
     new_permanent: int = 0
@@ -319,17 +243,11 @@ class SimulationState:
     # Policy configuration
     country_cap_enabled: bool = False
     
-    # Legacy fields for backward compatibility with tests
-    top_temp_nationalities: Dict[str, float] = field(default_factory=dict)
-    converted_by_country: Dict[str, int] = field(default_factory=dict)
-    queue_backlog_by_country: Dict[str, int] = field(default_factory=dict)
-    
     def __post_init__(self):
-        """CRITICAL FIX: DO NOT recalculate annual_conversion_cap - it should be constant."""
-        # REMOVED: The recalculation that was causing cap to change every year
+        """No automatic recalculation of conversion cap."""
         pass
     
-    # SPEC-10: On-the-fly aggregation properties (no redundant storage)
+    # On-the-fly aggregation properties
     @property
     def total_workers(self) -> int:
         """Total worker count computed from worker list."""
@@ -349,13 +267,12 @@ class SimulationState:
     def avg_wage_total(self) -> float:
         """Average wage across all workers."""
         if not self.workers:
-            return 95000.0  # Default for empty states
+            return 95000.0
         return sum(w.wage for w in self.workers) / len(self.workers)
     
     @property
     def avg_wage_permanent(self) -> float:
         """Average wage of permanent workers."""
-        # CRITICAL FIX: Changed 'workers' to 'self.workers'
         permanent_wages = [w.wage for w in self.workers if w.is_permanent]
         return sum(permanent_wages) / len(permanent_wages) if permanent_wages else 95000.0
     
@@ -383,15 +300,7 @@ class SimulationState:
         return self.permanent_workers / self.total_workers if self.total_workers > 0 else 0.0
     
     def get_nationality_distribution(self, status: Optional[WorkerStatus] = None) -> Dict[str, int]:
-        """
-        Get nationality distribution for workers.
-        
-        Args:
-            status: Filter by worker status, None for all workers
-            
-        Returns:
-            Dictionary mapping nationality to count
-        """
+        """Get nationality distribution for workers."""
         distribution = defaultdict(int)
         for worker in self.workers:
             if status is None or worker.status == status:
@@ -428,10 +337,7 @@ class SimulationState:
             'permanent_share': self.permanent_share,
             'annual_conversion_cap': self.annual_conversion_cap,
             'cumulative_conversions': self.cumulative_conversions,
-            'country_cap_enabled': self.country_cap_enabled,
-            'top_temp_nationalities': self.top_temp_nationalities,
-            'converted_by_country': self.converted_by_country,
-            'queue_backlog_by_country': self.queue_backlog_by_country
+            'country_cap_enabled': self.country_cap_enabled
         }
     
     def to_json(self) -> str:
@@ -441,34 +347,20 @@ class SimulationState:
 class BacklogAnalysis:
     """
     Backlog analysis utility with streamlined API.
-    SPEC-10: Simplified construction and clear data contracts.
-    CRITICAL FIX: Consistent backlog counting logic for both capped and uncapped scenarios.
+    CLEANUP: Removed redundant attributes and simplified logic.
     """
     
     def __init__(self, scenario: str, backlog_by_nationality: Dict[str, int], 
                  total_backlog: int, final_year: int):
-        """
-        Initialize BacklogAnalysis.
-        
-        Args:
-            scenario: Scenario name (e.g., "capped", "uncapped")
-            backlog_by_nationality: Dictionary mapping nationality to backlog count
-            total_backlog: Total backlog across all nationalities
-            final_year: Final year of simulation
-        """
+        """Initialize BacklogAnalysis."""
         self.scenario = scenario
-        self.scenario_name = scenario  # Alias
         self.backlog_by_nationality = backlog_by_nationality.copy()
-        self.backlog_data = backlog_by_nationality.copy()  # Alias
         self.total_backlog = total_backlog
         self.final_year = final_year
     
     @classmethod
     def from_simulation(cls, simulation, scenario_name: str) -> 'BacklogAnalysis':
-        """
-        Create BacklogAnalysis from completed simulation.
-        CRITICAL FIX: Consistent queue counting based on the actual scenario configuration.
-        """
+        """Create BacklogAnalysis from completed simulation."""
         backlog_data = {}
         
         # Initialize all nationalities to 0
@@ -476,7 +368,7 @@ class BacklogAnalysis:
         for nationality in all_nationalities:
             backlog_data[nationality] = 0
         
-        # CRITICAL FIX: Use the simulation's own country_cap_enabled status, not scenario name guessing
+        # Use the simulation's own country_cap_enabled status
         use_country_queues = getattr(simulation, 'country_cap_enabled', False)
         
         if use_country_queues and hasattr(simulation, 'country_queues'):
@@ -594,20 +486,16 @@ class BacklogAnalysis:
     
     @property
     def empty(self) -> bool:
-        """Check if backlog is empty (for test compatibility)."""
+        """Check if backlog is empty."""
         return self.total_backlog == 0
     
     def __repr__(self) -> str:
         top_3 = dict(list(self.get_top_backlogs(3).items()))
         return f"BacklogAnalysis(scenario='{self.scenario}', total={self.total_backlog}, top_3={top_3})"
 
-# SPEC-10: Validation functions (meaningful constraints only)
 def validate_simulation_state_consistency(state: SimulationState) -> bool:
-    """
-    Validate meaningful state consistency constraints.
-    SPEC-10: Only checks constraints that can actually be violated.
-    """
-    # Check worker count consistency (can be violated by bugs)
+    """Validate meaningful state consistency constraints."""
+    # Check worker count consistency
     computed_total = state.permanent_workers + state.temporary_workers
     if computed_total != state.total_workers:
         return False
@@ -616,7 +504,7 @@ def validate_simulation_state_consistency(state: SimulationState) -> bool:
     if len(state.workers) != state.total_workers:
         return False
     
-    # Check wage aggregation consistency (can be violated by NaN/None wages)
+    # Check wage aggregation consistency
     if state.total_workers > 0:
         manual_total_wage = sum(w.wage for w in state.workers if w.wage is not None and not math.isnan(w.wage))
         if abs(manual_total_wage - state.total_wage_bill) > 0.01:
@@ -625,10 +513,7 @@ def validate_simulation_state_consistency(state: SimulationState) -> bool:
     return True
 
 def validate_simulation_consistency(states: List[SimulationState]) -> bool:
-    """
-    Validate consistency across multiple simulation states.
-    SPEC-10: Legacy compatibility function.
-    """
+    """Validate consistency across multiple simulation states."""
     for state in states:
         if not validate_simulation_state_consistency(state):
             return False

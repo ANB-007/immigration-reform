@@ -59,7 +59,7 @@ STARTING_WAGE = 95000.0  # CRITICAL FIX: Ensure this is used consistently
 
 # CRITICAL FIX: Robust job change probabilities for reliable positive wage growth
 JOB_CHANGE_PROB_PERM = 0.12               # 12% per year for permanent workers (robust)
-TEMP_JOB_CHANGE_PENALTY = 0.25            # 25% penalty for temporary workers
+TEMP_JOB_CHANGE_PENALTY = 0.20            # 20% penalty for temporary workers
 JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 9.0%
 
 # CRITICAL FIX: Robust wage jump factors for reliable positive wage growth
@@ -83,8 +83,8 @@ ANNUAL_H1B_ENTRY_RATE = 0.0008          # H-1B entry rate
 # --- CRITICAL FIX: Individual countries + "Other" category for per-country cap handling ---
 TEMP_NATIONALITY_DISTRIBUTION = {
     "India": 0.73,
-    "China": 0.16,
-    "Other": 0.11,  # This represents ALL other countries combined
+    "China": 0.11,
+    "Other": 0.16,  # This represents ALL other countries combined
 }
 PERMANENT_NATIONALITY = "United States"
 
@@ -169,13 +169,6 @@ def calculate_per_country_caps_with_other_handling(annual_slots: int, nationalit
         per_country_caps[OTHER_CATEGORY_NAME] = remaining_slots
     
     return per_country_caps
-
-# Helper functions (legacy compatibility)
-def calculate_per_country_caps_deterministic(annual_slots: int, nationalities: List[str]) -> dict:
-    """
-    Legacy function that now uses the new "Other" handling logic.
-    """
-    return calculate_per_country_caps_with_other_handling(annual_slots, nationalities)
 
 def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-6) -> bool:
     """Validate that nationality distribution sums to 1.0 within tolerance."""
