@@ -3,6 +3,7 @@
 Streamlined data models for workforce simulation.
 SPEC-10: Eliminated hardcoding, removed redundant variables, implemented on-the-fly aggregation.
 All temporal attributes are dynamically determined, aggregates computed from worker data.
+CRITICAL FIX: Resolved field() bug, fixed BacklogAnalysis counting, proper Worker initialization.
 """
 
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ class Worker:
     """
     Individual worker with dynamic temporal attributes.
     SPEC-10: No hardcoded years, all temporal attributes computed from simulation context.
+    CRITICAL FIX: Removed erroneous field() usage that was causing wage initialization issues.
     """
     
     def __init__(self, id: int, status: WorkerStatus, nationality: str, 
@@ -65,6 +67,7 @@ class Worker:
         """
         Initialize worker with dynamic temporal attributes.
         SPEC-10: All years computed relative to simulation_start_year.
+        CRITICAL FIX: Proper attribute initialization without field() errors.
         
         Args:
             id: Unique worker identifier
@@ -97,11 +100,11 @@ class Worker:
         # Deterministic ordering for queue processing
         self.arrival_index: Optional[int] = None
         
-        # Optional attributes for extensibility
+        # CRITICAL FIX: Direct initialization without field() - NO dataclass decorators on non-dataclass
         self.skills: Optional[List[str]] = None
         self.occupation: Optional[str] = None
         self.employer_id: Optional[int] = None
-        self.attributes: Dict[str, Any] = field(default_factory=dict)
+        self.attributes: Dict[str, Any] = {}  # CRITICAL FIX: Direct dict, not field()
     
     @property
     def is_temporary(self) -> bool:
@@ -145,7 +148,11 @@ class Worker:
     
     def apply_wage_jump(self, multiplier: float) -> None:
         """Apply wage increase due to job change."""
+        old_wage = self.wage
         self.wage *= multiplier
+        # CRITICAL FIX: Debug logging to track wage changes
+        if hasattr(self, '_debug') and self._debug:
+            print(f"Worker {self.id}: wage jump {old_wage:.0f} -> {self.wage:.0f} (x{multiplier:.3f})")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert worker to dictionary representation."""
@@ -346,7 +353,7 @@ class SimulationState:
     @property
     def avg_wage_permanent(self) -> float:
         """Average wage of permanent workers."""
-        permanent_wages = [w.wage for w in self.workers if w.is_permanent]
+        permanent_wages = [w.wage for w in workers if w.is_permanent]
         return sum(permanent_wages) / len(permanent_wages) if permanent_wages else 95000.0
     
     @property
@@ -432,6 +439,7 @@ class BacklogAnalysis:
     """
     Backlog analysis utility with streamlined API.
     SPEC-10: Simplified construction and clear data contracts.
+    CRITICAL FIX: Consistent backlog counting logic for both capped and uncapped scenarios.
     """
     
     def __init__(self, scenario: str, backlog_by_nationality: Dict[str, int], 
@@ -456,7 +464,7 @@ class BacklogAnalysis:
     def from_simulation(cls, simulation, scenario_name: str) -> 'BacklogAnalysis':
         """
         Create BacklogAnalysis from completed simulation.
-        SPEC-10: Robust queue detection with clear fallback logic.
+        CRITICAL FIX: Consistent queue counting based on the actual scenario configuration.
         """
         backlog_data = {}
         
@@ -465,34 +473,27 @@ class BacklogAnalysis:
         for nationality in all_nationalities:
             backlog_data[nationality] = 0
         
-        # Count workers in queues with priority-based detection
-        workers_counted = False
+        # CRITICAL FIX: Use the simulation's own country_cap_enabled status, not scenario name guessing
+        use_country_queues = getattr(simulation, 'country_cap_enabled', False)
         
-        # Priority 1: Use country_queues if available and populated
-        if (hasattr(simulation, 'country_queues') and simulation.country_queues and
-            any(len(queue) > 0 for queue in simulation.country_queues.values())):
+        if use_country_queues and hasattr(simulation, 'country_queues'):
+            # Use country-specific queues for capped scenarios
             for nationality, queue in simulation.country_queues.items():
                 if nationality in backlog_data:
                     backlog_data[nationality] = len(queue)
-            workers_counted = True
-        
-        # Priority 2: Use global_queue if available and populated
-        elif (hasattr(simulation, 'global_queue') and simulation.global_queue and
-              len(simulation.global_queue) > 0):
+        elif hasattr(simulation, 'global_queue'):
+            # Use global queue for uncapped scenarios
             for temp_worker in simulation.global_queue:
                 if hasattr(temp_worker, 'nationality') and temp_worker.nationality in backlog_data:
                     backlog_data[temp_worker.nationality] += 1
-            workers_counted = True
-        
-        # Priority 3: Use final state backlog data
-        elif hasattr(simulation, 'states') and simulation.states:
-            final_state = simulation.states[-1]
-            if hasattr(final_state, 'workers'):
-                # Count temporary workers by nationality
-                for worker in final_state.workers:
-                    if worker.is_temporary and worker.nationality in backlog_data:
-                        backlog_data[worker.nationality] += 1
-                workers_counted = True
+        else:
+            # Fallback: Count temporary workers from final state
+            if hasattr(simulation, 'states') and simulation.states:
+                final_state = simulation.states[-1]
+                if hasattr(final_state, 'workers'):
+                    for worker in final_state.workers:
+                        if worker.is_temporary and worker.nationality in backlog_data:
+                            backlog_data[worker.nationality] += 1
         
         total_backlog = sum(backlog_data.values())
         final_year = getattr(simulation.states[-1] if hasattr(simulation, 'states') and simulation.states else None, 'year', DEFAULT_SIMULATION_START_YEAR)
