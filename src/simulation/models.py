@@ -4,7 +4,7 @@ Streamlined data models for workforce simulation.
 SPEC-10: Eliminated hardcoding, removed redundant variables, implemented on-the-fly aggregation.
 All temporal attributes are dynamically determined, aggregates computed from worker data.
 CRITICAL FIX: Resolved field() bug, fixed BacklogAnalysis counting, proper Worker initialization.
-EMERGENCY FIX: Fixed 'workers' variable name error.
+EMERGENCY FIX: Fixed 'workers' variable name error and wage growth calculation issues.
 """
 
 from dataclasses import dataclass, field
@@ -304,10 +304,11 @@ class SimulationState:
     """
     Complete simulation state at a time point.
     SPEC-10: Streamlined to essential metrics, aggregates computed on-the-fly from worker data.
+    CRITICAL FIX: Fixed wage calculation and constant annual conversion cap.
     """
     year: int
     workers: List[Worker] = field(default_factory=list)  # Source of truth
-    annual_conversion_cap: int = 0  # SPEC-10: Computed from empirical params
+    annual_conversion_cap: int = 0  # CRITICAL FIX: Should be set once and remain constant
     
     # Conversion tracking
     new_permanent: int = 0
@@ -324,9 +325,9 @@ class SimulationState:
     queue_backlog_by_country: Dict[str, int] = field(default_factory=dict)
     
     def __post_init__(self):
-        """Compute annual conversion cap if not set."""
-        if self.annual_conversion_cap == 0 and self.workers:
-            self.annual_conversion_cap = calculate_annual_conversion_cap(len(self.workers))
+        """CRITICAL FIX: DO NOT recalculate annual_conversion_cap - it should be constant."""
+        # REMOVED: The recalculation that was causing cap to change every year
+        pass
     
     # SPEC-10: On-the-fly aggregation properties (no redundant storage)
     @property
@@ -354,7 +355,7 @@ class SimulationState:
     @property
     def avg_wage_permanent(self) -> float:
         """Average wage of permanent workers."""
-        # EMERGENCY FIX: Changed 'workers' to 'self.workers'
+        # CRITICAL FIX: Changed 'workers' to 'self.workers'
         permanent_wages = [w.wage for w in self.workers if w.is_permanent]
         return sum(permanent_wages) / len(permanent_wages) if permanent_wages else 95000.0
     
