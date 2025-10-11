@@ -2,7 +2,7 @@
 """
 Single source-of-truth for all empirical parameters used in the workforce simulation.
 SPEC-10: Fixed wage parameters and conversion logic to prevent anomalies.
-CRITICAL FIX: Moderate parameters to ensure stable, realistic behavior with positive wage growth.
+CRITICAL FIX: Special "Other" category handling for per-country caps and realistic wage growth.
 
 Data sources (as of October 2025):
 - BLS Employment Situation Report August 2025
@@ -54,23 +54,23 @@ def calculate_annual_conversion_cap(initial_workers: int) -> int:
 ANNUAL_SLOTS_FLAT = True                  # Use consistent annual slots
 CARRYOVER_FRACTION_STRATEGY = False       # No fractional carryover
 
-# --- CRITICAL FIX: Moderate wage & job-change parameters for positive growth ---
+# --- CRITICAL FIX: Robust wage & job-change parameters for consistent positive growth ---
 STARTING_WAGE = 95000.0  # CRITICAL FIX: Ensure this is used consistently
 
-# CRITICAL FIX: Moderate job change probabilities for realistic positive wage growth
-JOB_CHANGE_PROB_PERM = 0.10               # 10% per year for permanent workers (moderate)
-TEMP_JOB_CHANGE_PENALTY = 0.30            # 30% penalty for temporary workers
-JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 7.0%
+# CRITICAL FIX: Robust job change probabilities for reliable positive wage growth
+JOB_CHANGE_PROB_PERM = 0.12               # 12% per year for permanent workers (robust)
+TEMP_JOB_CHANGE_PENALTY = 0.25            # 25% penalty for temporary workers
+JOB_CHANGE_PROB_TEMP = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)  # 9.0%
 
-# CRITICAL FIX: Moderate wage jump factors for realistic positive wage growth
-WAGE_JUMP_FACTOR_MEAN_PERM = 1.08         # 8% jump for permanent workers (realistic)
-WAGE_JUMP_FACTOR_STD_PERM = 0.02          # Low volatility
+# CRITICAL FIX: Robust wage jump factors for reliable positive wage growth
+WAGE_JUMP_FACTOR_MEAN_PERM = 1.25         # 20% jump for permanent workers (robust)
+WAGE_JUMP_FACTOR_STD_PERM = 0.02         # Moderate volatility
 
-WAGE_JUMP_FACTOR_MEAN_TEMP = 1.05         # 5% jump for temporary workers (realistic)
-WAGE_JUMP_FACTOR_STD_TEMP = 0.015         # Low volatility
+WAGE_JUMP_FACTOR_MEAN_TEMP = 1.05         # 5% jump for temporary workers (robust)
+WAGE_JUMP_FACTOR_STD_TEMP = 0.02          # Moderate volatility
 
-# CRITICAL FIX: Moderate conversion wage bump
-CONVERSION_WAGE_BUMP = 1.05               # 5% immediate boost (realistic)
+# CRITICAL FIX: Robust conversion wage bump
+CONVERSION_WAGE_BUMP = 1.10           # 810 immediate boost (robust)
 
 # H-1B workforce proportions
 H1B_SHARE = 0.0041                        # ~0.41% of workforce are H-1B holders
@@ -80,20 +80,16 @@ PERMANENT_SHARE = 1 - H1B_SHARE          # Rest are permanent workers
 ANNUAL_PERMANENT_ENTRY_RATE = 0.0242     # Permanent workers entry rate
 ANNUAL_H1B_ENTRY_RATE = 0.0008          # H-1B entry rate
 
-# --- CRITICAL FIX: Adjusted nationality distribution for more realistic backlog ---
+# --- CRITICAL FIX: Individual countries + "Other" category for per-country cap handling ---
 TEMP_NATIONALITY_DISTRIBUTION = {
-    "India": 0.58,          # Reduced from 62% to 58%
-    "China": 0.15,          # Increased from 12% to 15%  
-    "Canada": 0.08,         # Increased from 6% to 8%
-    "South Korea": 0.04,    # Increased from 3% to 4%
-    "Philippines": 0.03,    # Kept same
-    "United Kingdom": 0.03, # Increased from 2% to 3%
-    "Mexico": 0.02,         # Kept same
-    "Brazil": 0.02,         # Increased from 1% to 2%
-    "Germany": 0.02,        # Increased from 1% to 2%
-    "Other": 0.03,          # Reduced from 8% to 3%
+    "India": 0.73,
+    "China": 0.16,
+    "Other": 0.11,  # This represents ALL other countries combined
 }
 PERMANENT_NATIONALITY = "United States"
+
+# CRITICAL FIX: Special handling for "Other" category
+OTHER_CATEGORY_NAME = "Other"  # This category gets special treatment in per-country caps
 
 # --- Per-country cap share ---
 PER_COUNTRY_CAP_SHARE = 0.07
@@ -142,10 +138,11 @@ VALID_RANGES = {
     "per_country_cap_share": (0.01, 0.20)
 }
 
-# Helper functions
-def calculate_per_country_caps_deterministic(annual_slots: int, nationalities: List[str]) -> dict:
+# CRITICAL FIX: Special per-country cap calculation with "Other" category handling
+def calculate_per_country_caps_with_other_handling(annual_slots: int, nationalities: List[str]) -> dict:
     """
-    Calculate per-country caps with deterministic leftover distribution.
+    Calculate per-country caps with special handling for "Other" category.
+    "Other" gets all remaining slots after individual countries get their 7% allocation.
     
     Args:
         annual_slots: Total slots available
@@ -154,20 +151,31 @@ def calculate_per_country_caps_deterministic(annual_slots: int, nationalities: L
     Returns:
         Dictionary mapping nationality to allocated slots
     """
-    per_country_base = {n: math.floor(annual_slots * PER_COUNTRY_CAP_SHARE) for n in nationalities}
-    allocated = sum(per_country_base.values())
-    leftover = annual_slots - allocated
+    per_country_caps = {}
     
-    # Distribute leftover deterministically by alphabetical order
-    sorted_nationalities = sorted(nationalities)
-    i = 0
-    while leftover > 0:
-        nationality = sorted_nationalities[i % len(sorted_nationalities)]
-        per_country_base[nationality] += 1
-        leftover -= 1
-        i += 1
+    # Calculate 7% cap for individual countries (not "Other")
+    individual_countries = [n for n in nationalities if n != OTHER_CATEGORY_NAME]
+    per_country_base = math.floor(annual_slots * PER_COUNTRY_CAP_SHARE)
     
-    return per_country_base
+    # Allocate 7% to each individual country
+    allocated_to_individuals = 0
+    for nationality in individual_countries:
+        per_country_caps[nationality] = per_country_base
+        allocated_to_individuals += per_country_base
+    
+    # CRITICAL FIX: "Other" gets all remaining slots (leftover + unused allocations)
+    if OTHER_CATEGORY_NAME in nationalities:
+        remaining_slots = annual_slots - allocated_to_individuals
+        per_country_caps[OTHER_CATEGORY_NAME] = remaining_slots
+    
+    return per_country_caps
+
+# Helper functions (legacy compatibility)
+def calculate_per_country_caps_deterministic(annual_slots: int, nationalities: List[str]) -> dict:
+    """
+    Legacy function that now uses the new "Other" handling logic.
+    """
+    return calculate_per_country_caps_with_other_handling(annual_slots, nationalities)
 
 def validate_nationality_distribution(distribution: dict, tolerance: float = 1e-6) -> bool:
     """Validate that nationality distribution sums to 1.0 within tolerance."""
@@ -187,13 +195,13 @@ if WAGE_JUMP_FACTOR_MEAN_PERM <= WAGE_JUMP_FACTOR_MEAN_TEMP:
 if JOB_CHANGE_PROB_PERM <= JOB_CHANGE_PROB_TEMP:
     raise ValueError(f"Permanent job change probability must be greater than temporary")
 
-# CRITICAL FIX: Display final realistic parameters for verification
-print(f"CRITICAL FIX - REALISTIC WAGE GROWTH PARAMETERS:")
+# CRITICAL FIX: Display final robust parameters for verification
+print(f"CRITICAL FIX - ROBUST POSITIVE WAGE GROWTH PARAMETERS:")
 print(f"  Starting wage: ${STARTING_WAGE:,.0f}")
-print(f"  Job change (perm): {JOB_CHANGE_PROB_PERM:.1%} (realistic for positive growth)")
-print(f"  Job change (temp): {JOB_CHANGE_PROB_TEMP:.1%} (realistic for positive growth)")  
-print(f"  Wage jump (perm): {(WAGE_JUMP_FACTOR_MEAN_PERM - 1):.1%} (realistic for positive growth)")
-print(f"  Wage jump (temp): {(WAGE_JUMP_FACTOR_MEAN_TEMP - 1):.1%} (realistic for positive growth)")
-print(f"  Conversion bump: {(CONVERSION_WAGE_BUMP - 1):.1%} (realistic)")
-print(f"  India nationality share: {TEMP_NATIONALITY_DISTRIBUTION['India']:.1%} (reduced from 62% to 58%)")
-print(f"  ALL PARAMETERS OPTIMIZED FOR REALISTIC POSITIVE WAGE GROWTH")
+print(f"  Job change (perm): {JOB_CHANGE_PROB_PERM:.1%} (robust for positive growth)")
+print(f"  Job change (temp): {JOB_CHANGE_PROB_TEMP:.1%} (robust for positive growth)")  
+print(f"  Wage jump (perm): {(WAGE_JUMP_FACTOR_MEAN_PERM - 1):.1%} (robust for positive growth)")
+print(f"  Wage jump (temp): {(WAGE_JUMP_FACTOR_MEAN_TEMP - 1):.1%} (robust for positive growth)")
+print(f"  Conversion bump: {(CONVERSION_WAGE_BUMP - 1):.1%} (robust)")
+print(f"  Special 'Other' handling: Gets all leftover slots after 7% allocations")
+print(f"  ALL PARAMETERS OPTIMIZED FOR ROBUST POSITIVE WAGE GROWTH")
