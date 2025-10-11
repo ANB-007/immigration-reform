@@ -1,632 +1,428 @@
 # src/simulation/cli.py
 """
-Command-line interface for the workforce growth simulation.
-Provides a user-friendly way to run simulations with various parameters.
-Updated for SPEC-10 with streamlined imports and corrected functionality.
+Command-line interface for the workforce simulation.
+CLEANUP: Streamlined to work with cleaned up models and removed dependencies.
 """
 
-import sys
 import argparse
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
-import pandas as pd
 
 from .models import SimulationConfig, BacklogAnalysis
 from .sim import Simulation
-from .utils import (
-    save_simulation_results, validate_configuration, 
-    format_number, format_percentage, format_currency,
-    save_backlog_analysis, load_backlog_analysis,
-    ensure_output_directory
-)
-from .empirical_params import (
-    DEFAULT_YEARS, DEFAULT_SEED, H1B_SHARE, 
-    ANNUAL_PERMANENT_ENTRY_RATE, ANNUAL_H1B_ENTRY_RATE,
-    PYTHON_MIN_VERSION, GREEN_CARD_CAP_ABS, REAL_US_WORKFORCE_SIZE,
-    STARTING_WAGE, JOB_CHANGE_PROB_PERM, TEMP_JOB_CHANGE_PENALTY,
-    WAGE_JUMP_FACTOR_MEAN_PERM, WAGE_JUMP_FACTOR_MEAN_TEMP, INDUSTRY_NAME, 
-    TEMP_NATIONALITY_DISTRIBUTION, PERMANENT_NATIONALITY, PER_COUNTRY_CAP_SHARE, 
-    ENABLE_COUNTRY_CAP_DEFAULT, OUTPUT_DIR, ENABLE_VISUALIZATION,
-    calculate_annual_conversion_cap, calculate_per_country_caps_deterministic
-)
 
-# FROM SPEC-6: Import visualization module
-try:
-    from .visualization import SimulationVisualizer
-    # SPEC-10: Simplified validation function names
-    def validate_dataframes(df1, df2):
-        """Basic DataFrame validation for visualization."""
-        return (isinstance(df1, pd.DataFrame) and isinstance(df2, pd.DataFrame) and 
-                not df1.empty and not df2.empty and
-                'year' in df1.columns and 'year' in df2.columns)
-    
-    def validate_backlog_dataframes(df1, df2):
-        """Basic backlog DataFrame validation."""
-        return (isinstance(df1, pd.DataFrame) and isinstance(df2, pd.DataFrame) and
-                'nationality' in df1.columns and 'nationality' in df2.columns)
-    
-    VISUALIZATION_AVAILABLE = True
-except ImportError as e:
-    VISUALIZATION_AVAILABLE = False
-    print(f"Warning: Visualization module not available: {e}")
+logger = logging.getLogger(__name__)
 
-def create_parser() -> argparse.ArgumentParser:
-    """Create and configure argument parser."""
+def setup_logging(debug: bool = False):
+    """Setup logging configuration."""
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(levelname)s:%(name)s:%(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
+def create_config_from_args(args) -> SimulationConfig:
+    """Create SimulationConfig from command line arguments."""
+    return SimulationConfig(
+        initial_workers=args.initial_workers,
+        years=args.years,
+        seed=args.seed,
+        output_path=args.output,
+        country_cap_enabled=args.country_cap,
+        compare_backlogs=args.compare,
+        debug=args.debug,
+        start_year=args.start_year
+    )
+
+def save_simulation_results_csv(states, filepath: str):
+    """Save simulation results to CSV file."""
+    import csv
+    from pathlib import Path
+    
+    # Ensure output directory exists
+    Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(filepath, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # Write header
+        writer.writerow([
+            'year', 'total_workers', 'permanent_workers', 'temporary_workers',
+            'new_permanent', 'new_temporary', 'converted_temps',
+            'avg_wage_total', 'avg_wage_permanent', 'avg_wage_temporary',
+            'total_wage_bill', 'h1b_share', 'permanent_share',
+            'annual_conversion_cap', 'cumulative_conversions'
+        ])
+        
+        # Write data rows
+        for state in states:
+            writer.writerow([
+                state.year, state.total_workers, state.permanent_workers, state.temporary_workers,
+                state.new_permanent, state.new_temporary, state.converted_temps,
+                state.avg_wage_total, state.avg_wage_permanent, state.avg_wage_temporary,
+                state.total_wage_bill, state.h1b_share, state.permanent_share,
+                state.annual_conversion_cap, state.cumulative_conversions
+            ])
+
+def run_single_simulation(config: SimulationConfig) -> None:
+    """Run a single simulation with the given configuration."""
+    logger.info(f"Running simulation: {config.initial_workers:,} workers, {config.years} years")
+    
+    # Create and run simulation
+    sim = Simulation(config)
+    states = sim.run()
+    
+    # Save results
+    try:
+        save_simulation_results_csv(states, config.output_path)
+        logger.info(f"Results saved to: {config.output_path}")
+    except Exception as e:
+        logger.error(f"Error saving results: {e}")
+        raise
+
+def run_comparative_analysis(config: SimulationConfig) -> None:
+    """Run comparative analysis between capped and uncapped scenarios."""
+    logger.info("Running comparative analysis (capped vs uncapped)")
+    
+    # Run uncapped simulation
+    logger.info("Running uncapped simulation...")
+    config_uncapped = SimulationConfig(
+        initial_workers=config.initial_workers,
+        years=config.years,
+        seed=config.seed,
+        country_cap_enabled=False,
+        debug=config.debug,
+        start_year=config.start_year
+    )
+    
+    sim_uncapped = Simulation(config_uncapped)
+    states_uncapped = sim_uncapped.run()
+    
+    # Run capped simulation
+    logger.info("Running capped simulation...")
+    config_capped = SimulationConfig(
+        initial_workers=config.initial_workers,
+        years=config.years,
+        seed=config.seed,
+        country_cap_enabled=True,
+        debug=config.debug,
+        start_year=config.start_year
+    )
+    
+    sim_capped = Simulation(config_capped)
+    states_capped = sim_capped.run()
+    
+    # Save individual results
+    uncapped_path = config.output_path.replace('.csv', '_uncapped.csv')
+    capped_path = config.output_path.replace('.csv', '_capped.csv')
+    
+    try:
+        save_simulation_results_csv(states_uncapped, uncapped_path)
+        save_simulation_results_csv(states_capped, capped_path)
+        logger.info(f"Uncapped results saved to: {uncapped_path}")
+        logger.info(f"Capped results saved to: {capped_path}")
+    except Exception as e:
+        logger.error(f"Error saving simulation results: {e}")
+        raise
+    
+    # Generate comparative analysis
+    try:
+        backlog_uncapped = BacklogAnalysis.from_simulation(sim_uncapped, "uncapped")
+        backlog_capped = BacklogAnalysis.from_simulation(sim_capped, "capped")
+        
+        # Save backlog analyses
+        backlog_uncapped.save_csv(config.output_path.replace('.csv', '_backlog_uncapped.csv'))
+        backlog_capped.save_csv(config.output_path.replace('.csv', '_backlog_capped.csv'))
+        
+        # Generate visualizations if available
+        try:
+            generate_comparison_charts(states_uncapped, states_capped, backlog_uncapped, backlog_capped)
+        except ImportError:
+            logger.warning("Visualization libraries not available. Install matplotlib and seaborn for charts.")
+        except Exception as e:
+            logger.warning(f"Visualization generation failed: {e}")
+        
+        # Print comparison summary
+        print_comparison_summary(states_uncapped, states_capped, backlog_uncapped, backlog_capped)
+        
+    except Exception as e:
+        logger.error(f"Error in comparative analysis: {e}")
+        raise
+
+def generate_comparison_charts(states_uncapped, states_capped, backlog_uncapped, backlog_capped):
+    """Generate comparison charts if visualization libraries are available."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    
+    # Set style
+    plt.style.use('default')
+    sns.set_palette("muted")
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('Immigration Policy Comparison: Capped vs Uncapped', fontsize=16, fontweight='bold')
+    
+    # 1. Wage growth comparison
+    years_uncapped = [state.year for state in states_uncapped]
+    wages_uncapped = [state.avg_wage_total for state in states_uncapped]
+    years_capped = [state.year for state in states_capped]
+    wages_capped = [state.avg_wage_total for state in states_capped]
+    
+    axes[0, 0].plot(years_uncapped, wages_uncapped, label='No Per-Country Cap', linewidth=2, color='#1f77b4')
+    axes[0, 0].plot(years_capped, wages_capped, label='7% Per-Country Cap', linewidth=2, color='#ff7f0e')
+    axes[0, 0].set_title('Average Worker Wage Comparison Over Time')
+    axes[0, 0].set_xlabel('Year')
+    axes[0, 0].set_ylabel('Average Wage ($)')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
+    axes[0, 0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
+    
+    # 2. Green card conversions per year
+    conversions_uncapped = [state.converted_temps for state in states_uncapped[1:]]  # Skip first year
+    conversions_capped = [state.converted_temps for state in states_capped[1:]]
+    conversion_years = years_uncapped[1:]
+    
+    width = 0.35
+    x = range(len(conversion_years))
+    axes[0, 1].bar([i - width/2 for i in x], conversions_uncapped, width, label='No Per-Country Cap', alpha=0.8, color='#1f77b4')
+    axes[0, 1].bar([i + width/2 for i in x], conversions_capped, width, label='7% Per-Country Cap', alpha=0.8, color='#ff7f0e')
+    axes[0, 1].set_title('Green Card Conversions Per Year')
+    axes[0, 1].set_xlabel('Year')
+    axes[0, 1].set_ylabel('Number of Conversions')
+    axes[0, 1].set_xticks(x)
+    axes[0, 1].set_xticklabels([str(year) for year in conversion_years], rotation=45)
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # 3. Final-Year Green Card Backlog by Nationality
+    backlog_df_uncapped = backlog_uncapped.to_dataframe()
+    backlog_df_capped = backlog_capped.to_dataframe()
+    
+    # Get top nationalities by backlog size
+    combined_backlogs = {}
+    for _, row in backlog_df_uncapped.iterrows():
+        combined_backlogs[row['nationality']] = row['backlog_size']
+    for _, row in backlog_df_capped.iterrows():
+        if row['nationality'] in combined_backlogs:
+            combined_backlogs[row['nationality']] += row['backlog_size']
+        else:
+            combined_backlogs[row['nationality']] = row['backlog_size']
+    
+    top_nationalities = sorted(combined_backlogs.items(), key=lambda x: x[1], reverse=True)[:10]
+    top_countries = [x[0] for x in top_nationalities]
+    
+    uncapped_values = []
+    capped_values = []
+    for country in top_countries:
+        uncapped_val = backlog_df_uncapped[backlog_df_uncapped['nationality'] == country]['backlog_size'].iloc[0] if len(backlog_df_uncapped[backlog_df_uncapped['nationality'] == country]) > 0 else 0
+        capped_val = backlog_df_capped[backlog_df_capped['nationality'] == country]['backlog_size'].iloc[0] if len(backlog_df_capped[backlog_df_capped['nationality'] == country]) > 0 else 0
+        uncapped_values.append(uncapped_val)
+        capped_values.append(capped_val)
+    
+    x = range(len(top_countries))
+    axes[1, 0].bar([i - width/2 for i in x], uncapped_values, width, label='No Per-Country Cap', alpha=0.8, color='#1f77b4')
+    axes[1, 0].bar([i + width/2 for i in x], capped_values, width, label='7% Per-Country Cap', alpha=0.8, color='#ff7f0e')
+    axes[1, 0].set_title('Final-Year Green Card Backlog by Nationality')
+    axes[1, 0].set_xlabel('Nationality')
+    axes[1, 0].set_ylabel('Backlog Size (# of Temporary Workers)')
+    axes[1, 0].set_xticks(x)
+    axes[1, 0].set_xticklabels(top_countries, rotation=45, ha='right')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # 4. H-1B share evolution
+    h1b_uncapped = [state.h1b_share for state in states_uncapped]
+    h1b_capped = [state.h1b_share for state in states_capped]
+    
+    axes[1, 1].plot(years_uncapped, h1b_uncapped, label='No Per-Country Cap', linewidth=2, color='#1f77b4')
+    axes[1, 1].plot(years_capped, h1b_capped, label='7% Per-Country Cap', linewidth=2, color='#ff7f0e')
+    axes[1, 1].set_title('H-1B Share of Workforce Over Time')
+    axes[1, 1].set_xlabel('Year')
+    axes[1, 1].set_ylabel('H-1B Share (%)')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True, alpha=0.3)
+    axes[1, 1].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x*100:.1f}%'))
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    output_path = Path('output')
+    output_path.mkdir(exist_ok=True)
+    plt.savefig(output_path / 'immigration_policy_comparison.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    logger.info(f"Comparison chart saved to: {output_path / 'immigration_policy_comparison.png'}")
+
+def print_comparison_summary(states_uncapped, states_capped, backlog_uncapped, backlog_capped):
+    """Print comparison summary."""
+    print("\n" + "="*60)
+    print("COMPARATIVE ANALYSIS SUMMARY")
+    print("="*60)
+    
+    # Final states
+    final_uncapped = states_uncapped[-1]
+    final_capped = states_capped[-1]
+    
+    print(f"Final workforce size:")
+    print(f"  Uncapped: {final_uncapped.total_workers:,}")
+    print(f"  Capped:   {final_capped.total_workers:,}")
+    print(f"  Difference: {final_capped.total_workers - final_uncapped.total_workers:,}")
+    
+    print(f"\nFinal average wages:")
+    print(f"  Uncapped: ${final_uncapped.avg_wage_total:,.0f}")
+    print(f"  Capped:   ${final_capped.avg_wage_total:,.0f}")
+    print(f"  Difference: ${final_capped.avg_wage_total - final_uncapped.avg_wage_total:,.0f}")
+    
+    print(f"\nTotal green card backlogs:")
+    print(f"  Uncapped: {backlog_uncapped.total_backlog:,}")
+    print(f"  Capped:   {backlog_capped.total_backlog:,}")
+    print(f"  Difference: {backlog_capped.total_backlog - backlog_uncapped.total_backlog:,}")
+    
+    # Backlog validation
+    backlog_diff = abs(backlog_uncapped.total_backlog - backlog_capped.total_backlog)
+    print(f"\nSPEC-10 Backlog Validation:")
+    print(f"  Total backlog difference: {backlog_diff} (should be ≤ 1)")
+    print(f"  Backlog invariant {'✅ PASSED' if backlog_diff <= 1 else '❌ FAILED'}")
+    
+    # Top backlogs by nationality
+    print(f"\nTop 3 backlogs by nationality (Uncapped):")
+    top_uncapped = backlog_uncapped.get_top_backlogs(3)
+    for nationality, size in top_uncapped.items():
+        print(f"  {nationality}: {size:,}")
+    
+    print(f"\nTop 3 backlogs by nationality (Capped):")
+    top_capped = backlog_capped.get_top_backlogs(3)
+    for nationality, size in top_capped.items():
+        print(f"  {nationality}: {size:,}")
+    
+    print("="*60)
+
+def main():
+    """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
-        description="Workforce Growth Simulation - Model permanent vs temporary worker dynamics with wage tracking, green card conversions, nationality segmentation, per-country caps, visualization, and backlog analysis (SPEC-10)",
+        description="Workforce Growth Simulation - Immigration Policy Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m src.simulation.cli --initial-workers 10000
-  python -m src.simulation.cli --initial-workers 50000 --years 20 --seed 123
-  python -m src.simulation.cli --initial-workers 10000 --output results.csv
-  python -m src.simulation.cli --initial-workers 100000 --count-mode  # For large simulations
-  python -m src.simulation.cli --initial-workers 10000 --show-nationality-summary  # Show nationality breakdown
-  python -m src.simulation.cli --initial-workers 10000 --country-cap  # Enable 7%% per-country cap
-  python -m src.simulation.cli --initial-workers 10000 --visualize-results  # Generate comparison charts
-  python -m src.simulation.cli --initial-workers 10000 --compare-backlogs  # Compare backlogs by nationality
-  python -m src.simulation.cli --initial-workers 10000 --debug  # Enable debug output
+  # Basic simulation
+  python -m src.simulation --initial-workers 50000 --years 10
+
+  # Policy comparison  
+  python -m src.simulation --initial-workers 100000 --years 20 --compare
+
+  # Enable per-country caps with debug output
+  python -m src.simulation --initial-workers 75000 --country-cap --debug
+
+  # Custom output location
+  python -m src.simulation --initial-workers 25000 --output results/my_simulation.csv
         """
     )
     
+    # Required arguments
     parser.add_argument(
-        "--initial-workers",
-        type=int,
+        '--initial-workers', 
+        type=int, 
         required=True,
-        help="Starting number of worker agents (required)"
+        help='Initial workforce size (required)'
     )
     
     parser.add_argument(
-        "--years",
+        '--years', 
+        type=int, 
+        default=20,
+        help='Number of years to simulate (default: 20)'
+    )
+    
+    # Policy options
+    parser.add_argument(
+        '--country-cap',
+        action='store_true',
+        help='Enable per-country caps (7%% limitation)'
+    )
+    
+    parser.add_argument(
+        '--compare',
+        action='store_true', 
+        help='Compare capped vs uncapped scenarios'
+    )
+    
+    # Configuration options
+    parser.add_argument(
+        '--seed',
         type=int,
-        default=DEFAULT_YEARS,
-        help=f"Number of years to simulate (default: {DEFAULT_YEARS})"
+        help='Random seed for reproducible results'
     )
     
     parser.add_argument(
-        "--seed",
+        '--start-year',
         type=int,
-        help="Random seed for reproducibility (optional)"
+        default=2025,
+        help='Starting year for simulation (default: 2025)'
+    )
+    
+    # Output options
+    parser.add_argument(
+        '--output',
+        type=str,
+        default='data/simulation_results.csv',
+        help='Output file path (default: data/simulation_results.csv)'
     )
     
     parser.add_argument(
-        "--output",
-        default="data/sample_output.csv",
-        help="Output CSV file path (default: data/sample_output.csv)"
+        '--debug',
+        action='store_true',
+        help='Enable debug output'
     )
     
-    # FROM SPEC-3: Agent-mode vs count-mode selection
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--agent-mode",
-        action="store_true",
-        default=True,
-        help="Use agent-based simulation with individual wage and nationality tracking (default)"
-    )
-    mode_group.add_argument(
-        "--count-mode", 
-        action="store_true",
-        help="Use count-based simulation for large populations (faster, approximate wages/nationalities)"
-    )
-    
-    # FROM SPEC-4: Nationality summary option
-    parser.add_argument(
-        "--show-nationality-summary",
-        action="store_true",
-        help="Show nationality breakdown at start and end of simulation"
-    )
-    
-    # FROM SPEC-5: Per-country cap options
-    cap_group = parser.add_mutually_exclusive_group()
-    cap_group.add_argument(
-        "--country-cap",
-        action="store_true",
-        help="Enable 7%% per-country limit on employment-based green cards"
-    )
-    cap_group.add_argument(
-        "--no-country-cap",
-        action="store_true", 
-        default=True,
-        help="Disable per-country cap (default - use global FIFO queue)"
-    )
-    
-    # FROM SPEC-6: Visualization options
-    parser.add_argument(
-        "--visualize-results",
-        action="store_true",
-        help="Generate wage and workforce comparison charts (runs both capped and uncapped scenarios)"
-    )
-    
-    # FROM SPEC-7: Backlog analysis options
-    parser.add_argument(
-        "--compare-backlogs",
-        action="store_true",
-        help="Compare final-year backlogs by nationality between capped and uncapped simulations"
-    )
-    
-    parser.add_argument(
-        "--output-dir",
-        default=OUTPUT_DIR,
-        help=f"Directory for visualization outputs (default: {OUTPUT_DIR})"
-    )
-    
-    parser.add_argument(
-        "--skip-plots",
-        action="store_true",
-        help="Generate data but skip displaying plots (useful for batch processing)"
-    )
-    
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug output showing conversion caps and queue lengths"
-    )
-    
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging"
-    )
-    
-    parser.add_argument(
-        "--quiet", "-q",
-        action="store_true",
-        help="Suppress all output except errors"
-    )
-    
-    return parser
-
-def setup_logging(verbose: bool = False, quiet: bool = False, debug: bool = False) -> None:
-    """Configure logging based on verbosity settings."""
-    if quiet:
-        level = logging.ERROR
-    elif debug or verbose:
-        level = logging.DEBUG
-    else:
-        level = logging.INFO
-    
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-
-def run_simulation_scenario(config: SimulationConfig, scenario_name: str, 
-                          quiet: bool = False) -> tuple[pd.DataFrame, BacklogAnalysis]:
-    """
-    Run a single simulation scenario and return results as DataFrame and BacklogAnalysis.
-    SPEC-10: Simplified without live data dependencies.
-    """
-    if not quiet:
-        cap_status = "WITH" if config.country_cap_enabled else "WITHOUT"
-        debug_status = " (DEBUG MODE)" if config.debug else ""
-        print(f"\n🔬 Running simulation {scenario_name} ({cap_status} per-country cap){debug_status}...")
-    
-    # Run simulation
-    simulation = Simulation(config)
-    states = simulation.run()
-    
-    # Save results to temporary CSV for visualization
-    temp_output_path = f"temp_{scenario_name.lower().replace(' ', '_')}_results.csv"
-    save_simulation_results(states, temp_output_path, include_nationality_columns=True)
-    
-    # Load as DataFrame
-    results_df = pd.read_csv(temp_output_path)
-    
-    # Generate backlog analysis
-    scenario_type = "capped" if config.country_cap_enabled else "uncapped"
-    backlog_analysis = BacklogAnalysis.from_simulation(simulation, scenario_type)
-    
-    # Clean up temporary file
-    import os
-    try:
-        os.remove(temp_output_path)
-    except OSError:
-        pass
-    
-    if not quiet:
-        final_state = states[-1]
-        print(f"✅ Completed {scenario_name}: {final_state.total_workers:,} workers, "
-              f"${final_state.avg_wage_total:,.0f} avg wage, "
-              f"{backlog_analysis.total_backlog:,} total backlog")
-        
-        # Show debug info if enabled
-        if config.debug:
-            annual_cap = calculate_annual_conversion_cap(config.initial_workers)
-            print(f"   Debug: Annual conversion cap: {annual_cap}")
-            total_conversions = sum(state.converted_temps for state in states[1:])
-            print(f"   Debug: Total conversions: {total_conversions:,}")
-            print(f"   Debug: Final temporary workers: {final_state.temporary_workers}")
-    
-    return results_df, backlog_analysis
-
-def print_simulation_header(config: SimulationConfig) -> None:
-    """Print simulation header with parameters."""
-    print("\n" + "="*60)
-    print("WORKFORCE GROWTH SIMULATION - SPEC-10")
-    print("="*60)
-    print(f"Industry: {INDUSTRY_NAME}")
-    print(f"Initial workforce: {format_number(config.initial_workers)}")
-    print(f"Simulation years: {config.years}")
-    print(f"Simulation mode: {'Agent-based' if config.agent_mode else 'Count-based'}")
-    print(f"Random seed: {config.seed or 'None (random)'}")
-    print(f"Output file: {config.output_path}")
-    
-    # Show debug status
-    if config.debug:
-        print(f"Debug mode: ENABLED")
-    
-    # Performance warning for large agent-mode simulations
-    if config.agent_mode and config.initial_workers > 200000:
-        print(f"\n⚠️  WARNING: Agent-mode with {format_number(config.initial_workers)} workers will be slow.")
-        print("   Consider using --count-mode for large simulations.")
-    
-    # Show conversion cap information
-    annual_cap = calculate_annual_conversion_cap(config.initial_workers)
-    cap_proportion = GREEN_CARD_CAP_ABS / REAL_US_WORKFORCE_SIZE
-    
-    print(f"\nGreen card conversion system:")
-    print(f"  Annual conversions: {annual_cap}")
-    print(f"  Based on: {format_number(GREEN_CARD_CAP_ABS)} / {format_number(REAL_US_WORKFORCE_SIZE)} * {format_number(config.initial_workers)}")
-    print(f"  Cap proportion: {format_percentage(cap_proportion, 6)}")
-    
-    # Per-country cap information
-    if config.country_cap_enabled:
-        nationalities = list(TEMP_NATIONALITY_DISTRIBUTION.keys())
-        per_country_caps = calculate_per_country_caps_deterministic(annual_cap, nationalities)
-        max_per_country = max(per_country_caps.values()) if per_country_caps else 0
-        print(f"  Per-country cap: ENABLED ({format_percentage(PER_COUNTRY_CAP_SHARE)})")
-        print(f"  Max per country: {max_per_country} conversions/year")
-        print(f"  Queue mode: Separate nationality queues with FIFO within each")
-    else:
-        print(f"  Per-country cap: DISABLED")
-        print(f"  Queue mode: Single global FIFO queue")
-    
-    # Enhanced wage differentiation info
-    temp_job_change_prob = JOB_CHANGE_PROB_PERM * (1 - TEMP_JOB_CHANGE_PENALTY)
-    print(f"\nWage differentiation parameters:")
-    print(f"  Starting wage: {format_currency(STARTING_WAGE)}")
-    print(f"  Job change probability (permanent): {format_percentage(JOB_CHANGE_PROB_PERM)}")
-    print(f"  Job change probability (temporary): {format_percentage(temp_job_change_prob)}")
-    print(f"  Wage jump on job change (permanent): {format_percentage(WAGE_JUMP_FACTOR_MEAN_PERM - 1)}")
-    print(f"  Wage jump on job change (temporary): {format_percentage(WAGE_JUMP_FACTOR_MEAN_TEMP - 1)}")
-    
-    # Nationality distribution
-    print(f"\nNationality distribution:")
-    print(f"  Permanent workers: {PERMANENT_NATIONALITY}")
-    print("  Temporary worker nationalities (top 5):")
-    sorted_nationalities = sorted(TEMP_NATIONALITY_DISTRIBUTION.items(), key=lambda x: x[1], reverse=True)
-    for nationality, proportion in sorted_nationalities[:5]:
-        print(f"    {nationality}: {format_percentage(proportion)}")
-    
-    # Analysis modes
-    if config.compare_backlogs:
-        print(f"\nBacklog analysis: ENABLED")
-        print(f"  Will compare final-year backlogs by nationality")
-        print(f"  Expected: Total backlog identical across scenarios, distribution differs")
-    
-    print(f"\nUsing empirical parameters:")
-    print(f"  H-1B share: {format_percentage(H1B_SHARE)}")
-    print(f"  Annual permanent entry rate: {format_percentage(ANNUAL_PERMANENT_ENTRY_RATE)}")
-    print(f"  Annual H-1B entry rate: {format_percentage(ANNUAL_H1B_ENTRY_RATE)}")
-    
-    print("="*60)
-
-def print_data_sources():
-    """Print data sources information."""
-    from .empirical_params import DATA_SOURCES
-    print(f"\nData sources:")
-    for key, source in list(DATA_SOURCES.items())[:5]:  # Show first 5
-        print(f"  • {source}")
-    if len(DATA_SOURCES) > 5:
-        print(f"  • ... and {len(DATA_SOURCES) - 5} more sources")
-
-def print_simulation_results(simulation):
-    """Print summary of simulation results."""
-    if not simulation.states:
-        print("No simulation results to display")
-        return
-    
-    initial_state = simulation.states[0]
-    final_state = simulation.states[-1]
-    
-    print("\n" + "="*60)
-    print("SIMULATION RESULTS SUMMARY")
-    print("="*60)
-    
-    # Basic statistics
-    print(f"Years simulated: {len(simulation.states) - 1}")
-    print(f"Total workers: {initial_state.total_workers:,} → {final_state.total_workers:,}")
-    print(f"Growth: {final_state.total_workers - initial_state.total_workers:,} workers")
-    
-    # H-1B share
-    print(f"H-1B share: {initial_state.h1b_share:.2%} → {final_state.h1b_share:.2%}")
-    
-    # Wage statistics
-    print(f"Average wage: ${initial_state.avg_wage_total:,.0f} → ${final_state.avg_wage_total:,.0f}")
-    if final_state.avg_wage_permanent > 0 and final_state.avg_wage_temporary > 0:
-        print(f"  Permanent: ${final_state.avg_wage_permanent:,.0f}")
-        print(f"  Temporary: ${final_state.avg_wage_temporary:,.0f}")
-        wage_diff = final_state.avg_wage_permanent - final_state.avg_wage_temporary
-        print(f"  Wage gap: ${wage_diff:,.0f}")
-    
-    # Conversions
-    total_conversions = sum(state.converted_temps for state in simulation.states[1:])
-    print(f"Total conversions: {total_conversions:,}")
-    
-    annual_cap = calculate_annual_conversion_cap(simulation.config.initial_workers)
-    print(f"Annual conversion slots: {annual_cap}")
-    
-    print(f"Per-country cap: {'ENABLED' if simulation.country_cap_enabled else 'DISABLED'}")
-    
-    # Final state
-    print(f"Final temporary workers: {final_state.temporary_workers:,}")
-    
-    print("="*60)
-
-def main() -> int:
-    """Main entry point for CLI."""
-    parser = create_parser()
+    # Parse arguments
     args = parser.parse_args()
     
     # Setup logging
-    setup_logging(args.verbose, args.quiet, args.debug)
-    logger = logging.getLogger(__name__)
+    setup_logging(args.debug)
     
+    # Create output directory if it doesn't exist
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create configuration
     try:
-        # Check Python version
-        import sys
-        python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-        required_version = PYTHON_MIN_VERSION
-        if python_version < required_version:
-            print(f"Error: Python {required_version}+ required, found {python_version}")
-            return 1
-        
-        # Determine country cap setting
-        if args.country_cap:
-            country_cap_enabled = True
-        elif args.no_country_cap:
-            country_cap_enabled = False
+        config = create_config_from_args(args)
+    except Exception as e:
+        logger.error(f"Error creating configuration: {e}")
+        sys.exit(1)
+    
+    # Print simulation info
+    print("\n" + "="*60)
+    print("WORKFORCE GROWTH SIMULATION")
+    print("="*60)
+    print(f"Initial workforce: {config.initial_workers:,}")
+    print(f"Simulation years: {config.years}")
+    print(f"Per-country cap: {'ENABLED' if config.country_cap_enabled else 'DISABLED'}")
+    print(f"Random seed: {config.seed or 'None (random)'}")
+    print("="*60)
+    
+    # Run simulation(s)
+    try:
+        if args.compare:
+            run_comparative_analysis(config)
         else:
-            country_cap_enabled = ENABLE_COUNTRY_CAP_DEFAULT
+            run_single_simulation(config)
         
-        # Check visualization requirements
-        if (args.visualize_results or args.compare_backlogs) and not VISUALIZATION_AVAILABLE:
-            print("Error: Visualization libraries not available. Install with:")
-            print("pip install matplotlib seaborn plotly pandas")
-            return 1
-        
-        # Create base configuration
-        base_config = SimulationConfig(
-            initial_workers=args.initial_workers,
-            years=args.years,
-            seed=args.seed,
-            output_path=args.output,
-            agent_mode=not args.count_mode,
-            show_nationality_summary=args.show_nationality_summary,
-            country_cap_enabled=country_cap_enabled,
-            compare_backlogs=args.compare_backlogs,
-            debug=args.debug
-        )
-        
-        # Validate configuration
-        errors = validate_configuration(base_config)
-        if errors:
-            print("Configuration errors:")
-            for error in errors:
-                print(f"  • {error}")
-            return 1
-        
-        # Ensure output directory exists
-        ensure_output_directory(args.output_dir)
-        
-        # Handle different modes
-        if args.compare_backlogs:
-            # Backlog analysis mode
-            if not args.quiet:
-                print_simulation_header(base_config)
-                print("\n📊 BACKLOG ANALYSIS MODE: Running both scenarios for backlog comparison...")
-            
-            # Run uncapped scenario
-            uncapped_config = SimulationConfig(
-                initial_workers=args.initial_workers,
-                years=args.years,
-                seed=args.seed,
-                output_path=f"{args.output_dir}/uncapped_results.csv",
-                agent_mode=not args.count_mode,
-                show_nationality_summary=False,
-                country_cap_enabled=False,
-                compare_backlogs=True,
-                debug=args.debug
-            )
-            
-            results_uncapped, backlog_uncapped = run_simulation_scenario(
-                uncapped_config, "Uncapped", args.quiet
-            )
-            
-            # Run capped scenario
-            capped_config = SimulationConfig(
-                initial_workers=args.initial_workers,
-                years=args.years,
-                seed=args.seed,
-                output_path=f"{args.output_dir}/capped_results.csv",
-                agent_mode=not args.count_mode,
-                show_nationality_summary=False,
-                country_cap_enabled=True,
-                compare_backlogs=True,
-                debug=args.debug
-            )
-            
-            results_capped, backlog_capped = run_simulation_scenario(
-                capped_config, "Capped", args.quiet
-            )
-            
-            # Save backlog analyses to CSV
-            backlog_uncapped_path = Path(args.output_dir) / "backlog_uncapped.csv"
-            backlog_capped_path = Path(args.output_dir) / "backlog_capped.csv"
-            
-            save_backlog_analysis(backlog_uncapped, str(backlog_uncapped_path))
-            save_backlog_analysis(backlog_capped, str(backlog_capped_path))
-            
-            # Generate visualizations if available
-            if VISUALIZATION_AVAILABLE and not args.skip_plots:
-                if not args.quiet:
-                    print("\n📊 Generating backlog comparison visualizations...")
-                
-                if not validate_dataframes(results_uncapped, results_capped):
-                    print("Warning: Invalid data for wage visualization")
-                else:
-                    backlog_df_uncapped = backlog_uncapped.to_dataframe()
-                    backlog_df_capped = backlog_capped.to_dataframe()
-                    
-                    if validate_backlog_dataframes(backlog_df_uncapped, backlog_df_capped):
-                        # Create visualizer and generate charts
-                        visualizer = SimulationVisualizer(
-                            output_dir=args.output_dir,
-                            save_plots=True
-                        )
-                        
-                        # Generate all visualizations
-                        try:
-                            wage_files = visualizer.generate_all_visualizations(
-                                results_uncapped, results_capped
-                            )
-                            
-                            backlog_files = visualizer.generate_backlog_visualizations(
-                                backlog_df_uncapped, backlog_df_capped
-                            )
-                            
-                            # Print generated files
-                            generated_files = {**wage_files, **backlog_files}
-                            if not args.quiet and generated_files:
-                                print("Generated visualization files:")
-                                for viz_name, filepath in generated_files.items():
-                                    if filepath:
-                                        print(f"  📈 {viz_name}: {filepath}")
-                        except Exception as e:
-                            print(f"Warning: Visualization generation failed: {e}")
-            
-            # Print results
-            if not args.quiet:
-                print("\n✅ Backlog analysis complete!")
-                print(f"CSV files:")
-                print(f"  📄 backlog_uncapped.csv: {backlog_uncapped_path}")
-                print(f"  📄 backlog_capped.csv: {backlog_capped_path}")
-                
-                # Show invariant validation
-                print(f"\nSPEC-10 Backlog Validation:")
-                total_backlog_diff = abs(backlog_uncapped.total_backlog - backlog_capped.total_backlog)
-                print(f"  Total backlog difference: {total_backlog_diff} (should be ≤ 1)")
-                print(f"  Total backlog (uncapped): {backlog_uncapped.total_backlog:,} workers")
-                print(f"  Total backlog (capped): {backlog_capped.total_backlog:,} workers")
-                print(f"  Backlog invariant {'✅ PASSED' if total_backlog_diff <= 1 else '❌ FAILED'}")
-        
-        elif args.visualize_results:
-            # Standard visualization mode
-            if not args.quiet:
-                print_simulation_header(base_config)
-                print("\n🎨 VISUALIZATION MODE: Running both scenarios for comparison...")
-            
-            # Run both scenarios
-            uncapped_config = SimulationConfig(
-                initial_workers=args.initial_workers,
-                years=args.years,
-                seed=args.seed,
-                output_path=f"{args.output_dir}/uncapped_results.csv",
-                agent_mode=not args.count_mode,
-                show_nationality_summary=False,
-                country_cap_enabled=False,
-                debug=args.debug
-            )
-            
-            results_uncapped, _ = run_simulation_scenario(
-                uncapped_config, "Uncapped", args.quiet
-            )
-            
-            capped_config = SimulationConfig(
-                initial_workers=args.initial_workers,
-                years=args.years,
-                seed=args.seed,
-                output_path=f"{args.output_dir}/capped_results.csv",
-                agent_mode=not args.count_mode,
-                show_nationality_summary=False,
-                country_cap_enabled=True,
-                debug=args.debug
-            )
-            
-            results_capped, _ = run_simulation_scenario(
-                capped_config, "Capped", args.quiet
-            )
-            
-            # Generate visualizations
-            if VISUALIZATION_AVAILABLE and not args.skip_plots:
-                if not args.quiet:
-                    print("\n📊 Generating comparative visualizations...")
-                
-                if not validate_dataframes(results_uncapped, results_capped):
-                    print("Warning: Invalid data for visualization")
-                else:
-                    visualizer = SimulationVisualizer(
-                        output_dir=args.output_dir,
-                        save_plots=True
-                    )
-                    
-                    try:
-                        generated_files = visualizer.generate_all_visualizations(
-                            results_uncapped, results_capped
-                        )
-                        
-                        # Print results
-                        if not args.quiet and generated_files:
-                            print("\n✅ Visualization complete!")
-                            print("Generated files:")
-                            for viz_name, filepath in generated_files.items():
-                                if filepath:
-                                    print(f"  📈 {viz_name}: {filepath}")
-                    except Exception as e:
-                        print(f"Warning: Visualization generation failed: {e}")
-        
-        else:
-            # Standard single-scenario mode
-            if not args.quiet:
-                print_simulation_header(base_config)
-            
-            # Run simulation
-            simulation = Simulation(base_config)
-            states = simulation.run()
-            
-            # Save results
-            save_simulation_results(states, base_config.output_path, include_nationality_columns=True)
-            
-            # Print results (unless quiet mode)
-            if not args.quiet:
-                print_simulation_results(simulation)
-                print_data_sources()
-        
-        if not args.quiet:
-            print(f"\n✅ Simulation completed successfully!")
-            if not (args.visualize_results or args.compare_backlogs):
-                print(f"Results saved to: {base_config.output_path}")
-            print(f"\nNext steps:")
-            print(f"  • Examine conversion patterns (should show constant annual conversions)")
-            print(f"  • Compare wage differentiation between worker types")
-            if not args.compare_backlogs:
-                print(f"  • Use --compare-backlogs to verify backlog invariants")
-            if not args.debug:
-                print(f"  • Use --debug to see detailed conversion information")
-        
-        return 0
+        logger.info("Simulation completed successfully!")
         
     except KeyboardInterrupt:
-        print("\nSimulation interrupted by user")
-        return 1
+        logger.info("Simulation interrupted by user")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Simulation failed: {e}")
-        if args.verbose or args.debug:
+        if args.debug:
             import traceback
             traceback.print_exc()
-        return 1
+        sys.exit(1)
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    main()
